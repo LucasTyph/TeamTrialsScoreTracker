@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "score-tracker"
+version = "0.1.0"
+description = "Extract structured score data from game screenshots and track character performance over time"
+requires-python = ">=3.10"
+dependencies = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "pandas>=2.0.0",
+    "pystray>=0.19.0",
+    "pywin32>=306",
+]
+
+[project.scripts]
+score-tracker = "main:main"

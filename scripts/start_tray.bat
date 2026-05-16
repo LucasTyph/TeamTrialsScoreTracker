@@ -1,5 +1,5 @@
 @echo off
-cd /d "%~dp0"
+cd /d "%~dp0.."
 echo Starting Score Tracker...
 echo The app will run in the background (system tray).
 echo Close the console window to exit.
