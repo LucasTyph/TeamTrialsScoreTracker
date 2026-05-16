@@ -28,23 +28,28 @@ def _score_name(name, text_entries):
     best_entry = None
 
     for part in name_parts:
-        if len(part) < 3:
-            for e in text_entries:
-                if e["text"].lower() == part:
-                    matched += 1
-                    if best_entry is None:
-                        best_entry = e
-                    break
-        else:
-            for e in text_entries:
-                w = e["text"].lower()
-                if part == w or part in w or w in part:
-                    matched += 1
-                    if best_entry is None:
-                        best_entry = e
-                    break
+        for e in text_entries:
+            w = e["text"].lower()
+            if _part_matches(part, w):
+                matched += 1
+                if best_entry is None:
+                    best_entry = e
+                break
 
     return matched / len(name_parts), best_entry
+
+
+def _part_matches(part, word):
+    """Check if a name part matches an OCR word, avoiding short-substring traps."""
+    if part == word:
+        return True
+    if len(part) < 3 and len(word) < 3:
+        return False
+    if len(part) < 3:
+        return word == part
+    if len(word) < 3:
+        return part == word
+    return part in word or word in part
 
 
 def _locate_score(text_entry, numbers, row_tolerance):
