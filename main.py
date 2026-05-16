@@ -3,6 +3,7 @@
 Usage:
     python main.py            Record a new match (two screenshots)
     python main.py --analyze  Show performance analysis
+    python main.py --tray     Run as background tray app
     python main.py --debug    Show OCR output from clipboard image
 """
 
@@ -16,19 +17,10 @@ from config import (
     FUZZY_MATCH_THRESHOLD,
     ROW_TOLERANCE,
 )
-from ocr import (
-    crop_above_bar,
-    detect_green_bars,
-    extract_data,
-    extract_text,
-    grab_clipboard,
-)
-from parser import parse_scores, parse_single_match
+from ocr import detect_green_bars, crop_above_bar, extract_data, extract_text, grab_clipboard
+from parser import parse_single_match
 from storage import append_match, load_data
-from analysis import full_analysis
-
-
-VERBOSE = "--verbose" in sys.argv or "--debug" in sys.argv
+from analysis import full_analysis, format_report
 
 
 def _parse_image(img):
@@ -38,23 +30,23 @@ def _parse_image(img):
     if not bars:
         print("  No green bars detected — falling back to full-image OCR")
         ocr_data = extract_data(img)
-        return parse_scores(ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD)
+        return parse_single_match(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, set()
+        )
 
     print(f"  Detected {len(bars)} green bar(s)")
     results = {}
     claimed = set()
-
-    for i, (bar_start, bar_end) in enumerate(bars):
+    for bar_start, bar_end in bars:
         crop = crop_above_bar(img, bar_start, bar_end, CROP_ABOVE_BAR)
         if crop is None:
             continue
         ocr_data = extract_data(crop)
-        crop_scores = parse_single_match(
-            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed, VERBOSE
+        scores = parse_single_match(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed
         )
-        results.update(crop_scores)
-        claimed.update(crop_scores.keys())
-
+        results.update(scores)
+        claimed.update(scores.keys())
     return results
 
 
@@ -66,26 +58,6 @@ def _process_screenshot(label):
         return None
     print(f"  Captured {img.size[0]}x{img.size[1]}")
     return img
-
-
-def _show_ocr_summary(ocr_data, label):
-    """Print all detected words and positions from OCR."""
-    texts = []
-    for i, text in enumerate(ocr_data["text"]):
-        if ocr_data["level"][i] != 5:
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        y = ocr_data["top"][i]
-        x = ocr_data["left"][i]
-        texts.append((y, x, text))
-
-    texts.sort()
-    print(f"\n  --- OCR detected words ({label}) ---")
-    for y, x, t in texts:
-        print(f"  {y:4d},{x:4d}  {t}")
-    print(f"  --- {len(texts)} words total ---")
 
 
 def cmd_record():
@@ -118,10 +90,10 @@ def cmd_record():
     combined.update(scores2)
 
     total = sum(v for v in combined.values() if v is not None)
-    print(f"\n  Combined: {len(combined)}/{len(CHARACTER_NAMES)} characters  (total: {total})")
+    print(f"\n  Combined: {len(combined)}/{len(CHARACTER_NAMES)} characters  (total: {total:,})")
     for name in CHARACTER_NAMES:
         val = combined.get(name, None)
-        label = str(val) if val is not None else "MISSING"
+        label = f"{val:,}" if val is not None else "MISSING"
         print(f"    {name:20s} {label}")
 
     if len(combined) == len(CHARACTER_NAMES):
@@ -134,6 +106,14 @@ def cmd_record():
         if save == "y":
             row = append_match(combined)
             print(f"Saved to {CSV_FILENAME}")
+
+
+def cmd_analyze():
+    df = load_data()
+    if df.empty:
+        print("No match data found. Record some matches first with: python main.py")
+        return
+    print(format_report(df, k=ADJUSTED_SCORE_K))
 
 
 def cmd_debug():
@@ -158,11 +138,11 @@ def cmd_debug():
             continue
         print(f"  Bar {i+1}: y={bar_start}-{bar_end}, crop={crop.size[0]}x{crop.size[1]}")
         ocr_data = extract_data(crop)
-        crop_scores = parse_single_match(
-            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed, VERBOSE
+        scores = parse_single_match(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed
         )
-        claimed.update(crop_scores.keys())
-        for name, val in sorted(crop_scores.items()):
+        claimed.update(scores.keys())
+        for name, val in sorted(scores.items()):
             print(f"    Matched: {name:20s} {val}")
 
     if not bars:
@@ -170,42 +150,26 @@ def cmd_debug():
         print("\nRaw OCR text:")
         print(extract_text(img))
         print()
-        data = extract_data(img)
-        _show_ocr_summary(data, "full image")
-
-        print("\nAttempting character name matching...")
-        for name in CHARACTER_NAMES:
-            found = False
-            for i, text in enumerate(data["text"]):
-                if data["level"][i] != 5:
-                    continue
-                text = text.strip()
-                if not text:
-                    continue
-                if name.lower() in text.lower() or text.lower() in name.lower():
-                    print(f"  '{name}' -> word '{text}' at ({data['left'][i]},{data['top'][i]})")
-                    found = True
-            if not found:
-                print(f"  '{name}' -> no direct word match")
 
 
-def cmd_analyze():
-    df = load_data()
-    if df.empty:
-        print("No match data found. Record some matches first with: python main.py")
-        return
-    print(f"Loaded {len(df)} match(es).\n")
-    results = full_analysis(df, k=ADJUSTED_SCORE_K)
-    col_order = ["adjusted", "avg_rank", "mean", "median", "std", "p75", "min", "max", "matches"]
-    available = [c for c in col_order if c in results.columns]
-    print(results[available].to_string())
+def cmd_tray():
+    """Run as background tray application."""
+    from tray_app import run
+    run()
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--analyze":
-        cmd_analyze()
-    elif len(sys.argv) > 1 and sys.argv[1] == "--debug":
-        cmd_debug()
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg == "--analyze":
+            cmd_analyze()
+        elif arg == "--debug":
+            cmd_debug()
+        elif arg == "--tray":
+            cmd_tray()
+        else:
+            print(f"Unknown argument: {arg}")
+            print("Usage: python main.py [--analyze|--debug|--tray]")
     else:
         cmd_record()
 
