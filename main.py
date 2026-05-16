@@ -11,14 +11,44 @@ import sys
 from config import (
     ADJUSTED_SCORE_K,
     CHARACTER_NAMES,
+    CROP_ABOVE_BAR,
     CSV_FILENAME,
     FUZZY_MATCH_THRESHOLD,
     ROW_TOLERANCE,
 )
-from ocr import extract_data, extract_text, grab_clipboard
+from ocr import (
+    crop_above_bar,
+    detect_green_bars,
+    extract_data,
+    extract_text,
+    grab_clipboard,
+)
 from parser import parse_scores
 from storage import append_match, load_data
 from analysis import full_analysis
+
+
+def _parse_image(img):
+    """Parse scores from an image using green-bar splitting."""
+    bars = detect_green_bars(img)
+
+    if not bars:
+        print("  No green bars detected — falling back to full-image OCR")
+        ocr_data = extract_data(img)
+        return parse_scores(ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD)
+
+    results = {}
+    for i, (bar_start, bar_end) in enumerate(bars):
+        crop = crop_above_bar(img, bar_start, bar_end, CROP_ABOVE_BAR)
+        if crop is None:
+            continue
+        ocr_data = extract_data(crop)
+        crop_scores = parse_scores(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD
+        )
+        results.update(crop_scores)
+
+    return results
 
 
 def _process_screenshot(label):
@@ -28,7 +58,7 @@ def _process_screenshot(label):
         print("  No image on clipboard.")
         return None
     print(f"  Captured {img.size[0]}x{img.size[1]}")
-    return extract_data(img)
+    return img
 
 
 def _show_ocr_summary(ocr_data, label):
@@ -58,18 +88,15 @@ def cmd_record():
     print("You will take two screenshots (Win+Shift+S) for one match.")
     print()
 
-    ocr1 = _process_screenshot("first")
-    if ocr1 is None:
+    img1 = _process_screenshot("first")
+    if img1 is None:
         return
-    _show_ocr_summary(ocr1, "screenshot 1")
+    scores1 = _parse_image(img1)
 
-    ocr2 = _process_screenshot("second")
-    if ocr2 is None:
+    img2 = _process_screenshot("second")
+    if img2 is None:
         return
-    _show_ocr_summary(ocr2, "screenshot 2")
-
-    scores1 = parse_scores(ocr1, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD)
-    scores2 = parse_scores(ocr2, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD)
+    scores2 = _parse_image(img2)
 
     print(f"\n  Screenshot 1 matched: {len(scores1)} characters")
     for name, val in sorted(scores1.items()):
@@ -114,27 +141,43 @@ def cmd_debug():
         return
     print(f"Image: {img.size[0]}x{img.size[1]}\n")
 
-    print("Raw OCR text:")
-    print(extract_text(img))
-    print()
+    bars = detect_green_bars(img)
+    print(f"Detected {len(bars)} green bar(s):")
+    for i, (bar_start, bar_end) in enumerate(bars):
+        crop = crop_above_bar(img, bar_start, bar_end, CROP_ABOVE_BAR)
+        if crop is None:
+            print(f"  Bar {i+1}: skipped (no room above)")
+            continue
+        print(f"  Bar {i+1}: y={bar_start}-{bar_end}, crop={crop.size[0]}x{crop.size[1]}")
+        ocr_data = extract_data(crop)
+        crop_scores = parse_scores(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD
+        )
+        for name, val in sorted(crop_scores.items()):
+            print(f"    Matched: {name:20s} {val}")
 
-    data = extract_data(img)
-    _show_ocr_summary(data, "all words")
+    if not bars:
+        print("  No green bars — showing full-image OCR instead")
+        print("\nRaw OCR text:")
+        print(extract_text(img))
+        print()
+        data = extract_data(img)
+        _show_ocr_summary(data, "full image")
 
-    print("\nAttempting character name matching...")
-    for name in CHARACTER_NAMES:
-        found = False
-        for i, text in enumerate(data["text"]):
-            if data["level"][i] != 5:
-                continue
-            text = text.strip()
-            if not text:
-                continue
-            if name.lower() in text.lower() or text.lower() in name.lower():
-                print(f"  '{name}' -> word '{text}' at ({data['left'][i]},{data['top'][i]})")
-                found = True
-        if not found:
-            print(f"  '{name}' -> no direct word match")
+        print("\nAttempting character name matching...")
+        for name in CHARACTER_NAMES:
+            found = False
+            for i, text in enumerate(data["text"]):
+                if data["level"][i] != 5:
+                    continue
+                text = text.strip()
+                if not text:
+                    continue
+                if name.lower() in text.lower() or text.lower() in name.lower():
+                    print(f"  '{name}' -> word '{text}' at ({data['left'][i]},{data['top'][i]})")
+                    found = True
+            if not found:
+                print(f"  '{name}' -> no direct word match")
 
 
 def cmd_analyze():
