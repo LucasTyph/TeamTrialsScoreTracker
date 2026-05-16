@@ -12,44 +12,39 @@ def _clean_number(text):
     return int(text.replace(",", "").replace(" ", ""))
 
 
-def _find_best_text_match(name, text_entries, fuzzy_threshold):
-    """Find the text entry that best matches a character name."""
-    name_lower = name.lower()
-    name_parts = name_lower.split()
+def _score_name(name, text_entries):
+    """Score how well a character name matches the words in a crop.
 
+    Returns (score, best_entry) where score is 0.0-1.0 based on what
+    fraction of the name's word-parts are found in the crop.  Short
+    parts (< 3 chars) require an exact standalone word match to avoid
+    spurious hits like 'O' matching 'Oguri' or 'Condor'.
+    """
+    name_parts = name.lower().split()
+    if not name_parts:
+        return 0.0, None
+
+    matched = 0
     best_entry = None
-    best_ratio = 0
 
-    for entry in text_entries:
-        w_lower = entry["text"].lower()
+    for part in name_parts:
+        if len(part) < 3:
+            for e in text_entries:
+                if e["text"].lower() == part:
+                    matched += 1
+                    if best_entry is None:
+                        best_entry = e
+                    break
+        else:
+            for e in text_entries:
+                w = e["text"].lower()
+                if part == w or part in w or w in part:
+                    matched += 1
+                    if best_entry is None:
+                        best_entry = e
+                    break
 
-        if w_lower == name_lower:
-            return entry
-
-        all_parts_in_row = all(p in w_lower for p in name_parts)
-        is_substring = w_lower in name_lower or name_lower in w_lower
-
-        if is_substring or all_parts_in_row:
-            ratio = 0.9
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_entry = entry
-            continue
-
-        for part in name_parts:
-            if w_lower == part or part in w_lower or w_lower in part:
-                ratio = 0.8
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_entry = entry
-
-        ratio = SequenceMatcher(None, w_lower, name_lower).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            if ratio >= fuzzy_threshold:
-                best_entry = entry
-
-    return best_entry if best_ratio >= fuzzy_threshold else None
+    return matched / len(name_parts), best_entry
 
 
 def _locate_score(text_entry, numbers, row_tolerance):
@@ -82,7 +77,8 @@ def _locate_score(text_entry, numbers, row_tolerance):
     return None
 
 
-def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
+def _extract_entries(ocr_data):
+    """Pull word-level entries from OCR data."""
     entries = []
     for i, text in enumerate(ocr_data["text"]):
         if ocr_data["level"][i] != 5:
@@ -99,7 +95,64 @@ def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
                 "h": ocr_data["height"][i],
             }
         )
+    return entries
 
+
+def parse_single_match(ocr_data, character_names, row_tolerance, fuzzy_threshold, claimed=None, verbose=False):
+    """Parse one crop and return at most ONE (name, score) pair.
+
+    Each crop sits above a single green bar, so it should contain exactly
+    one character entry.  We find the best-matching name and its score.
+    """
+    if claimed is None:
+        claimed = set()
+    entries = _extract_entries(ocr_data)
+    if not entries:
+        return {}
+
+    numbers = [e for e in entries if _is_number(e["text"])]
+    text_entries = [e for e in entries if not _is_number(e["text"])]
+
+    if verbose:
+        print(f"    Words: {[e['text'] for e in text_entries]}")
+        print(f"    Numbers: {[e['text'] for e in numbers]}")
+
+    best_name = None
+    best_score = None
+    best_ratio = 0
+
+    candidates = []
+    for name in character_names:
+        if name in claimed:
+            continue
+        ratio, match_entry = _score_name(name, text_entries)
+        if ratio < fuzzy_threshold:
+            continue
+
+        score_entry = _locate_score(match_entry, numbers, row_tolerance)
+        if score_entry is None:
+            continue
+
+        candidates.append((ratio, name, _clean_number(score_entry["text"]), match_entry["text"]))
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_name = name
+            best_score = _clean_number(score_entry["text"])
+
+    if verbose and candidates:
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        for ratio, name, score, matched_text in candidates:
+            marker = ">>>" if name == best_name else "   "
+            print(f"    {marker} {ratio:.2f}  {name:20s} score={score}  (matched word: '{matched_text}')")
+
+    if best_name is not None:
+        return {best_name: best_score}
+    return {}
+
+
+def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
+    entries = _extract_entries(ocr_data)
     if not entries:
         return {}
 
@@ -108,10 +161,9 @@ def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
 
     results = {}
     for name in character_names:
-        match = _find_best_text_match(name, text_entries, fuzzy_threshold)
-        if match is None:
+        ratio, match = _score_name(name, text_entries)
+        if ratio < fuzzy_threshold:
             continue
-
         score_entry = _locate_score(match, numbers, row_tolerance)
         if score_entry is not None:
             results[name] = _clean_number(score_entry["text"])

@@ -23,9 +23,12 @@ from ocr import (
     extract_text,
     grab_clipboard,
 )
-from parser import parse_scores
+from parser import parse_scores, parse_single_match
 from storage import append_match, load_data
 from analysis import full_analysis
+
+
+VERBOSE = "--verbose" in sys.argv or "--debug" in sys.argv
 
 
 def _parse_image(img):
@@ -37,16 +40,20 @@ def _parse_image(img):
         ocr_data = extract_data(img)
         return parse_scores(ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD)
 
+    print(f"  Detected {len(bars)} green bar(s)")
     results = {}
+    claimed = set()
+
     for i, (bar_start, bar_end) in enumerate(bars):
         crop = crop_above_bar(img, bar_start, bar_end, CROP_ABOVE_BAR)
         if crop is None:
             continue
         ocr_data = extract_data(crop)
-        crop_scores = parse_scores(
-            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD
+        crop_scores = parse_single_match(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed, VERBOSE
         )
         results.update(crop_scores)
+        claimed.update(crop_scores.keys())
 
     return results
 
@@ -143,6 +150,7 @@ def cmd_debug():
 
     bars = detect_green_bars(img)
     print(f"Detected {len(bars)} green bar(s):")
+    claimed = set()
     for i, (bar_start, bar_end) in enumerate(bars):
         crop = crop_above_bar(img, bar_start, bar_end, CROP_ABOVE_BAR)
         if crop is None:
@@ -150,9 +158,10 @@ def cmd_debug():
             continue
         print(f"  Bar {i+1}: y={bar_start}-{bar_end}, crop={crop.size[0]}x{crop.size[1]}")
         ocr_data = extract_data(crop)
-        crop_scores = parse_scores(
-            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD
+        crop_scores = parse_single_match(
+            ocr_data, CHARACTER_NAMES, ROW_TOLERANCE, FUZZY_MATCH_THRESHOLD, claimed, VERBOSE
         )
+        claimed.update(crop_scores.keys())
         for name, val in sorted(crop_scores.items()):
             print(f"    Matched: {name:20s} {val}")
 
