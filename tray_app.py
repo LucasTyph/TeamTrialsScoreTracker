@@ -43,7 +43,13 @@ def _setup_logging():
 
 
 def _icon_image():
-    """Create a simple icon in memory."""
+    """Load custom icon from assets/, fallback to generated icon."""
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+    if os.path.exists(icon_path):
+        img = Image.open(icon_path).convert("RGBA")
+        return img.resize((64, 64), Image.LANCZOS)
+
+    # Fallback: generated green circle
     size = (64, 64)
     img = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
