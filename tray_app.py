@@ -18,13 +18,26 @@ logger = logging.getLogger("tray_app")
 
 
 def _setup_logging():
-    """Configure logging to a file in the project directory."""
+    """Configure logging to both file and console."""
     log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tray.log")
-    logging.basicConfig(
-        filename=log_path,
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+
+    # Root logger for all modules
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    # File handler
+    fh = logging.FileHandler(log_path)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    # Console handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
 
 
 def _icon_image():

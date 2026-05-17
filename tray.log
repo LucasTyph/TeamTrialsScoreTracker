@@ -158,3 +158,103 @@
 2026-05-16 13:39:27,083 clipboard_monitor INFO Bar y=720-737 matched: ['Sakura Chiyono O']
 2026-05-16 13:39:27,250 clipboard_monitor INFO Bar y=832-850 matched: ['Agnes Digital']
 2026-05-16 13:39:27,256 tray_app INFO Match saved: 2026-05-16 13:39 total=738601
+2026-05-16 23:57:48,097 tray_app INFO Tray app starting
+2026-05-16 23:57:48,101 clipboard_monitor INFO Monitor loop started
+2026-05-16 23:57:48,101 clipboard_monitor INFO Clipboard monitor started
+2026-05-16 23:57:48,103 tray_app INFO Tray icon created, entering main loop
+2026-05-16 23:57:59,321 clipboard_monitor INFO New image detected (hash: ee32a698)
+2026-05-16 23:57:59,321 clipboard_monitor INFO Processing image 572x790
+2026-05-16 23:57:59,335 clipboard_monitor INFO Detected 7 green bars
+2026-05-16 23:58:00,271 clipboard_monitor INFO Bar y=74-90 matched: ['Oguri Cap']
+2026-05-16 23:58:00,450 clipboard_monitor INFO Bar y=186-203 matched: ['Maruzensky']
+2026-05-16 23:58:00,616 clipboard_monitor INFO Bar y=299-315 matched: ['Sakura Bakushin O']
+2026-05-16 23:58:00,800 clipboard_monitor INFO Bar y=411-429 matched: ['Agnes Digital']
+2026-05-16 23:58:00,986 clipboard_monitor INFO Bar y=524-540 matched: ['King Halo']
+2026-05-16 23:58:01,153 clipboard_monitor INFO Bar y=636-653 matched: ['Mihono Bourbon']
+2026-05-16 23:58:01,349 clipboard_monitor INFO Bar y=749-765 matched: ['Sakura Chiyono O']
+2026-05-16 23:58:10,598 clipboard_monitor INFO New image detected (hash: bc94f1bb)
+2026-05-16 23:58:10,598 clipboard_monitor INFO Processing image 576x860
+2026-05-16 23:58:10,610 clipboard_monitor INFO Detected 8 green bars
+2026-05-16 23:58:10,812 clipboard_monitor INFO Bar y=47-64 matched: ['Curren Chan']
+2026-05-16 23:58:10,981 clipboard_monitor INFO Bar y=160-177 matched: ['Gold Ship']
+2026-05-16 23:58:11,161 clipboard_monitor INFO Bar y=272-289 matched: ['El Condor Pasa']
+2026-05-16 23:58:11,323 clipboard_monitor INFO Bar y=385-402 matched: ['Kitasan Black']
+2026-05-16 23:58:11,506 clipboard_monitor INFO Bar y=497-514 matched: ['Narita Taishin']
+2026-05-16 23:58:11,697 clipboard_monitor INFO Bar y=610-627 matched: ['Agnes Tachyon']
+2026-05-16 23:58:11,858 clipboard_monitor INFO Bar y=722-739 matched: ['Biwa Hayahide']
+2026-05-16 23:58:12,041 clipboard_monitor INFO Bar y=835-852 matched: ['Smart Falcon']
+2026-05-16 23:58:12,070 tray_app INFO Match saved: 2026-05-16 23:58 total=681399
+2026-05-16 23:59:25,666 clipboard_monitor INFO New image detected (hash: 02be530c)
+2026-05-16 23:59:25,666 clipboard_monitor INFO Processing image 571x796
+2026-05-16 23:59:25,678 clipboard_monitor INFO Detected 7 green bars
+2026-05-16 23:59:25,860 clipboard_monitor INFO Bar y=76-92 matched: ['Sakura Chiyono O']
+2026-05-16 23:59:26,028 clipboard_monitor INFO Bar y=188-205 matched: ['Biwa Hayahide']
+2026-05-16 23:59:26,197 clipboard_monitor INFO Bar y=301-317 matched: ['Curren Chan']
+2026-05-16 23:59:26,378 clipboard_monitor INFO Bar y=413-430 matched: ['El Condor Pasa']
+2026-05-16 23:59:26,586 clipboard_monitor INFO Bar y=526-543 matched: ['Agnes Digital']
+2026-05-16 23:59:26,777 clipboard_monitor INFO Bar y=638-655 matched: ['Sakura Bakushin O']
+2026-05-16 23:59:26,947 clipboard_monitor INFO Bar y=751-767 matched: ['Maruzensky']
+2026-05-16 23:59:34,588 clipboard_monitor INFO New image detected (hash: 137f96d4)
+2026-05-16 23:59:34,588 clipboard_monitor INFO Processing image 569x857
+2026-05-16 23:59:34,598 clipboard_monitor INFO Detected 8 green bars
+2026-05-16 23:59:34,777 clipboard_monitor INFO Bar y=47-64 matched: ['Smart Falcon']
+2026-05-16 23:59:34,959 clipboard_monitor INFO Bar y=159-176 matched: ['King Halo']
+2026-05-16 23:59:35,168 clipboard_monitor INFO Bar y=272-289 matched: ['Gold Ship']
+2026-05-16 23:59:35,335 clipboard_monitor INFO Bar y=384-401 matched: ['Mihono Bourbon']
+2026-05-16 23:59:35,515 clipboard_monitor INFO Bar y=497-514 matched: ['Agnes Tachyon']
+2026-05-16 23:59:35,697 clipboard_monitor INFO Bar y=609-626 matched: ['Narita Taishin']
+2026-05-16 23:59:35,858 clipboard_monitor INFO Bar y=722-739 matched: ['Kitasan Black']
+2026-05-16 23:59:36,046 clipboard_monitor INFO Bar y=834-851 matched: []
+2026-05-16 23:59:47,582 clipboard_monitor INFO New image detected (hash: 82b9557a)
+2026-05-16 23:59:47,583 clipboard_monitor INFO Processing image 562x112
+2026-05-16 23:59:47,584 clipboard_monitor INFO Detected 1 green bars
+2026-05-16 23:59:47,773 clipboard_monitor INFO Bar y=68-85 matched: ['Oguri Cap']
+2026-05-16 23:59:47,785 tray_app INFO Match saved: 2026-05-16 23:59 total=708599
+2026-05-17 00:02:07,821 clipboard_monitor INFO New image detected (hash: 74a6c6e6)
+2026-05-17 00:02:07,825 clipboard_monitor INFO Processing image 575x789
+2026-05-17 00:02:07,838 clipboard_monitor INFO Detected 7 green bars
+2026-05-17 00:02:08,275 clipboard_monitor INFO Bar y=76-92 matched: ['Maruzensky']
+2026-05-17 00:02:08,523 clipboard_monitor INFO Bar y=188-205 matched: ['Agnes Tachyon']
+2026-05-17 00:02:08,711 clipboard_monitor INFO Bar y=301-317 matched: ['Sakura Chiyono O']
+2026-05-17 00:02:09,001 clipboard_monitor INFO Bar y=413-430 matched: ['Curren Chan']
+2026-05-17 00:02:09,221 clipboard_monitor INFO Bar y=526-542 matched: ['Narita Taishin']
+2026-05-17 00:02:09,426 clipboard_monitor INFO Bar y=638-655 matched: ['Biwa Hayahide']
+2026-05-17 00:02:09,645 clipboard_monitor INFO Bar y=751-767 matched: ['Mihono Bourbon']
+2026-05-17 00:02:19,938 clipboard_monitor INFO New image detected (hash: 95215426)
+2026-05-17 00:02:19,938 clipboard_monitor INFO Processing image 569x858
+2026-05-17 00:02:19,950 clipboard_monitor INFO Detected 8 green bars
+2026-05-17 00:02:20,141 clipboard_monitor INFO Bar y=40-57 matched: ['Oguri Cap']
+2026-05-17 00:02:20,313 clipboard_monitor INFO Bar y=153-171 matched: ['Agnes Digital']
+2026-05-17 00:02:20,492 clipboard_monitor INFO Bar y=265-282 matched: ['Kitasan Black']
+2026-05-17 00:02:20,652 clipboard_monitor INFO Bar y=378-394 matched: ['Gold Ship']
+2026-05-17 00:02:20,818 clipboard_monitor INFO Bar y=490-507 matched: ['Sakura Bakushin O']
+2026-05-17 00:02:21,007 clipboard_monitor INFO Bar y=603-619 matched: ['Smart Falcon']
+2026-05-17 00:02:21,212 clipboard_monitor INFO Bar y=715-732 matched: ['King Halo']
+2026-05-17 00:02:21,387 clipboard_monitor INFO Bar y=828-844 matched: ['El Condor Pasa']
+2026-05-17 00:02:21,400 tray_app INFO Match saved: 2026-05-17 00:02 total=697711
+2026-05-17 00:03:02,334 clipboard_monitor INFO New image detected (hash: 8261cb8e)
+2026-05-17 00:03:02,335 clipboard_monitor INFO Processing image 581x794
+2026-05-17 00:03:02,347 clipboard_monitor INFO Detected 7 green bars
+2026-05-17 00:03:02,578 clipboard_monitor INFO Bar y=79-95 matched: ['Oguri Cap']
+2026-05-17 00:03:02,804 clipboard_monitor INFO Bar y=191-209 matched: ['Agnes Digital']
+2026-05-17 00:03:02,961 clipboard_monitor INFO Bar y=304-320 matched: ['Agnes Tachyon']
+2026-05-17 00:03:03,120 clipboard_monitor INFO Bar y=416-433 matched: ['Biwa Hayahide']
+2026-05-17 00:03:03,338 clipboard_monitor INFO Bar y=529-545 matched: ['Curren Chan']
+2026-05-17 00:03:03,693 clipboard_monitor INFO Bar y=641-658 matched: []
+2026-05-17 00:03:04,136 clipboard_monitor INFO Bar y=754-770 matched: ['Maruzensky']
+2026-05-17 00:03:13,602 clipboard_monitor INFO New image detected (hash: d19004f7)
+2026-05-17 00:03:13,602 clipboard_monitor INFO Processing image 570x115
+2026-05-17 00:03:13,604 clipboard_monitor INFO Detected 1 green bars
+2026-05-17 00:03:13,893 clipboard_monitor INFO Bar y=69-86 matched: ['Gold Ship']
+2026-05-17 00:03:31,132 clipboard_monitor INFO New image detected (hash: 657844cf)
+2026-05-17 00:03:31,132 clipboard_monitor INFO Processing image 571x857
+2026-05-17 00:03:31,142 clipboard_monitor INFO Detected 8 green bars
+2026-05-17 00:03:31,325 clipboard_monitor INFO Bar y=48-64 matched: ['Mihono Bourbon']
+2026-05-17 00:03:31,500 clipboard_monitor INFO Bar y=160-177 matched: ['Narita Taishin']
+2026-05-17 00:03:31,687 clipboard_monitor INFO Bar y=273-289 matched: ['Sakura Bakushin O']
+2026-05-17 00:03:31,875 clipboard_monitor INFO Bar y=385-402 matched: ['El Condor Pasa']
+2026-05-17 00:03:32,042 clipboard_monitor INFO Bar y=498-514 matched: ['King Halo']
+2026-05-17 00:03:32,220 clipboard_monitor INFO Bar y=610-627 matched: ['Sakura Chiyono O']
+2026-05-17 00:03:32,398 clipboard_monitor INFO Bar y=723-739 matched: ['Smart Falcon']
+2026-05-17 00:03:32,548 clipboard_monitor INFO Bar y=835-852 matched: ['Kitasan Black']
+2026-05-17 00:03:32,553 tray_app INFO Match saved: 2026-05-17 00:03 total=750254
