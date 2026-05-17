@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
 from io import BytesIO
 
 import pystray
@@ -11,7 +13,7 @@ from PIL import Image, ImageDraw
 import config
 from clipboard_monitor import ClipboardMonitor
 from notifications import notify
-from analysis import full_analysis
+from analysis import format_report
 from storage import load_data
 
 logger = logging.getLogger("tray_app")
@@ -61,24 +63,72 @@ def _create_menu(tray, monitor):
 
 
 def _cmd_analyze():
-    """Show analysis in a popup window."""
+    """Show analysis in a Tkinter popup window."""
     df = load_data()
     if df.empty:
         notify("Score Tracker", "No match data found yet.")
         return
 
-    results = full_analysis(df, k=config.ADJUSTED_SCORE_K)
-    lines = [f"Matches recorded: {len(df)}", ""]
+    report = format_report(df, k=config.ADJUSTED_SCORE_K)
+    _show_report_window(report)
 
-    col_order = ["adjusted", "avg_rank", "mean", "std", "p75", "min", "max", "matches"]
-    available = [c for c in col_order if c in results.columns]
 
-    lines.append(results[available].to_string())
-    notify("Analysis", "\n".join(lines[:10]))
+def _show_report_window(report_text):
+    """Open a Tkinter window with the full analysis report in a separate thread."""
+
+    def _run_window():
+        root = tk.Tk()
+        root.title("Score Tracker — Analysis")
+        root.geometry("950x650")
+        root.minsize(600, 400)
+        root.resizable(True, True)
+
+        # Main frame
+        frame = ttk.Frame(root, padding="8")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Report text area
+        text = tk.Text(frame, wrap=tk.NONE, font=("Consolas", 10), bg="#1e1e1e", fg="#d4d4d4")
+        text.insert("1.0", report_text)
+        text.config(state=tk.DISABLED)
+
+        scrollbar_y = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+        scrollbar_x = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+        text.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
+        # Button frame
+        btn_frame = ttk.Frame(root)
+        btn_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+
+        def copy_all():
+            root.clipboard_clear()
+            root.clipboard_append(report_text)
+            root.update()
+            messagebox.showinfo("Copied", "Report copied to clipboard", parent=root)
+
+        ttk.Button(btn_frame, text="Copy All", command=copy_all).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Close", command=root.destroy).pack(side=tk.RIGHT, padx=4)
+
+        # Bring to front and focus
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after_idle(root.attributes, "-topmost", False)
+        root.focus_force()
+        root.mainloop()
+
+    # Run Tkinter in its own thread to avoid blocking the tray icon
+    threading.Thread(target=_run_window, daemon=True).start()
 
 
 def _cmd_last_match():
-    """Show the most recent match."""
+    """Show the most recent match in a Tkinter popup."""
     df = load_data()
     if df.empty:
         notify("Score Tracker", "No match data found yet.")
@@ -89,13 +139,13 @@ def _cmd_last_match():
     score_cols = [c for c in df.columns if c != "timestamp"]
     total = last[score_cols].sum()
 
-    lines = [f"Last match: {ts}", f"Total: {total:,}", ""]
+    lines = [f"Last Match: {ts}", f"Total Score: {total:,}", "", "Characters:"]
     for col in score_cols:
         val = last[col]
         if not str(val) == "nan":
-            lines.append(f"  {col}: {int(val):,}")
+            lines.append(f"  {col:20s} {int(val):>8,}")
 
-    notify("Last Match", "\n".join(lines[:15]))
+    _show_report_window("\n".join(lines))
 
 
 def _cmd_toggle(monitor, tray):

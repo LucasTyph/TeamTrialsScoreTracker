@@ -258,3 +258,13 @@
 2026-05-17 00:03:32,398 clipboard_monitor INFO Bar y=723-739 matched: ['Smart Falcon']
 2026-05-17 00:03:32,548 clipboard_monitor INFO Bar y=835-852 matched: ['Kitasan Black']
 2026-05-17 00:03:32,553 tray_app INFO Match saved: 2026-05-17 00:03 total=750254
+2026-05-17 00:09:15,012 tray_app INFO Tray app starting
+2026-05-17 00:09:15,029 clipboard_monitor INFO Initial clipboard image captured (will ignore)
+2026-05-17 00:09:15,030 clipboard_monitor INFO Monitor loop started
+2026-05-17 00:09:15,030 clipboard_monitor INFO Clipboard monitor started
+2026-05-17 00:09:15,034 tray_app INFO Tray icon created, entering main loop
+2026-05-17 00:14:17,071 tray_app INFO Tray app starting
+2026-05-17 00:14:17,089 clipboard_monitor INFO Initial clipboard image captured (will ignore)
+2026-05-17 00:14:17,090 clipboard_monitor INFO Monitor loop started
+2026-05-17 00:14:17,090 clipboard_monitor INFO Clipboard monitor started
+2026-05-17 00:14:17,091 tray_app INFO Tray icon created, entering main loop
