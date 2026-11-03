@@ -17,7 +17,14 @@ from config import (
     FUZZY_MATCH_THRESHOLD,
     ROW_TOLERANCE,
 )
-from ocr import detect_green_bars, crop_above_bar, extract_data, extract_text, grab_clipboard
+from ocr import (
+    detect_green_bars,
+    crop_above_bar,
+    extract_data,
+    extract_text,
+    grab_clipboard,
+    tesseract_available,
+)
 from parser import parse_single_match
 from storage import append_match, load_data
 from analysis import full_analysis, format_report
@@ -60,7 +67,20 @@ def _process_screenshot(label):
     return img
 
 
+def _check_tesseract():
+    """Verify Tesseract is installed and print install instructions if not."""
+    if tesseract_available():
+        return True
+    print("ERROR: Tesseract OCR was not found.")
+    print("  Install it from: https://github.com/UB-Mannheim/tesseract/wiki")
+    print(r"  Expected path: C:\Program Files\Tesseract-OCR\tesseract.exe")
+    print("  If it is installed elsewhere, update TESSERACT_CMD in config.py")
+    print("  or add the Tesseract install folder to your PATH.")
+    raise SystemExit(1)
+
+
 def cmd_record():
+    _check_tesseract()
     print("Match Score Recorder")
     print("====================")
     print()
@@ -118,6 +138,7 @@ def cmd_analyze():
 
 def cmd_debug():
     """Run OCR on whatever is on the clipboard and show all detected text."""
+    _check_tesseract()
     print("OCR Debug Mode")
     print("==============")
     print("Take a screenshot with Win+Shift+S, then press Enter...")
@@ -154,6 +175,7 @@ def cmd_debug():
 
 def cmd_tray():
     """Run as background tray application."""
+    _check_tesseract()
     from tray_app import run
     run()
 

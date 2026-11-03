@@ -1,12 +1,27 @@
 """OCR extraction from clipboard images."""
 
+import os
+import shutil
+
 import numpy as np
 import pytesseract
 from PIL import ImageGrab, Image
 
 import config
 
-pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
+# Use the configured path when it exists; otherwise fall back to Tesseract on PATH.
+TESSERACT_PATH = (
+    config.TESSERACT_CMD
+    if os.path.isfile(config.TESSERACT_CMD)
+    else (shutil.which("tesseract") or config.TESSERACT_CMD)
+)
+
+pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+
+
+def tesseract_available():
+    """Return True if the Tesseract OCR executable can be found."""
+    return os.path.isfile(TESSERACT_PATH)
 
 
 def grab_clipboard():

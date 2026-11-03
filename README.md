@@ -18,7 +18,7 @@ This tool provides:
 - [Python 3.10+](https://www.python.org/downloads/)
 - [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) — Install via UB-Mannheim releases
   - Default path: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-  - If installed in a different location, update `TESSERACT_CMD` in `config.py`
+  - If installed in a different location, update `TESSERACT_CMD` in `config.py`, or make sure `tesseract` is available on your `PATH`
 
 ## Installation
 
@@ -26,6 +26,12 @@ This tool provides:
 
 ```bash
 pip install -r requirements.txt
+```
+
+You can also install Tesseract itself with winget:
+
+```powershell
+winget install UB-Mannheim.TesseractOCR
 ```
 
 ### Using pyproject.toml
@@ -174,12 +180,13 @@ cd tests
 python run_test.py
 ```
 
-Runs the parser against the bundled test screenshots and validates the extracted scores against expected results.
+Runs the parser against the bundled test screenshots and validates the extracted scores against `tests/dataset.csv`. The test uses the character names from that dataset, so it does not depend on your personal `CHARACTER_NAMES` in `config.py`.
 
 ## Troubleshooting
 
 | Issue | Solution |
 | --- | --- |
+| **`Tesseract OCR was not found`** | Install Tesseract (see [Requirements](#requirements)) and make sure `TESSERACT_CMD` in `config.py` points to `tesseract.exe`, or add its install folder to your `PATH`. |
 | **No green bars detected** | Ensure your screenshot captures the character score area with visible green progress bars. Adjust `CROP_ABOVE_BAR` in `config.py` if needed. |
 | **Character names not matching** | Verify that names in `config.py` exactly match the in-game names. Lower `FUZZY_MATCH_THRESHOLD` if OCR misreads characters. Use `--debug` to inspect detected text. |
 | **Incorrect or missing scores** | Use `--debug --verbose` to view detected numbers and merge candidates. Ensure scores fall within the 10,000–200,000 range, or adjust `SCORE_MIN`/`SCORE_MAX` in `parser.py`. |
