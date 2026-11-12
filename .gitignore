@@ -27,3 +27,6 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Test / tooling caches
+.pytest_cache/

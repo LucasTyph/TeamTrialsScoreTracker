@@ -1,7 +1,8 @@
 """Statistical analysis of character performance."""
 
 import pandas as pd
-import numpy as np
+
+from .storage import to_wide
 
 
 def compute_statistics(df):
@@ -37,10 +38,23 @@ def consistency_adjusted_score(stats_df, k=0.5):
     return stats_df["mean"] - k * stats_df["std"].fillna(0)
 
 
-def contribution_pct(df, stats_df):
-    """Each character's avg score as % of avg total match score."""
+def complete_matches(df):
+    """Only matches where every roster character has a score."""
     score_cols = [c for c in df.columns if c != "timestamp"]
-    avg_total = df[score_cols].sum(axis=1).mean()
+    return df.dropna(subset=score_cols)
+
+
+def contribution_pct(df, stats_df):
+    """Each character's avg score as % of avg total match score.
+
+    Uses complete matches only, so a missing character can't inflate
+    everyone else's share. NaN when there are no complete matches.
+    """
+    complete = complete_matches(df)
+    score_cols = [c for c in df.columns if c != "timestamp"]
+    if complete.empty:
+        return pd.Series(float("nan"), index=stats_df.index)
+    avg_total = complete[score_cols].sum(axis=1).mean()
     return (stats_df["mean"] / avg_total * 100).round(1)
 
 
@@ -51,7 +65,7 @@ def coefficient_of_variation(stats_df):
 
 
 def assign_tier(stats_df):
-    """Assign S/A/B/C/D tiers based on adjusted score percentiles."""
+    """Assign S/A/B/C tiers based on adjusted score percentiles."""
     adjusted = stats_df["adjusted"]
     p25 = adjusted.quantile(0.25)
     p50 = adjusted.quantile(0.50)
@@ -78,7 +92,7 @@ def replace_priority(stats_df, df):
     - High CV (inconsistent)
     - Low adjusted score (bad)
     """
-    contrib = contribution_pct(df, stats_df)
+    contrib = contribution_pct(df, stats_df).fillna(0)
     cv = coefficient_of_variation(stats_df)
     adjusted = stats_df["adjusted"]
 
@@ -93,7 +107,8 @@ def replace_priority(stats_df, df):
 
 
 def team_trend(df, window=5):
-    """Compute rolling average of total match scores."""
+    """Rolling average of total match scores (complete matches only)."""
+    df = complete_matches(df)
     score_cols = [c for c in df.columns if c != "timestamp"]
     totals = df[score_cols].sum(axis=1)
     rolling = totals.rolling(window=window, min_periods=1).mean()
@@ -116,23 +131,32 @@ def full_analysis(df, k=0.5):
     return stats
 
 
-def format_report(df, k=0.5):
-    """Generate a human-readable analysis report."""
+def format_report(scores, roster, k=0.5):
+    """Human-readable analysis of the current roster.
+
+    ``scores`` is the long-format data from storage.load_scores().
+    """
+    df = to_wide(scores, roster)
+    df = df.drop(columns=[c for c in roster if df[c].isna().all()])
     if df.empty:
-        return "No match data found."
+        return "No match data found for the current roster."
 
     results = full_analysis(df, k)
     lines = []
 
+    complete = complete_matches(df)
     lines.append("=" * 70)
-    lines.append(f"CHARACTER PERFORMANCE REPORT ({len(df)} matches)")
+    lines.append(f"CHARACTER PERFORMANCE REPORT ({len(df)} matches, {len(complete)} complete)")
     lines.append("=" * 70)
     lines.append("")
 
-    # Team summary
+    # Team summary (complete matches only)
     score_cols = [c for c in df.columns if c != "timestamp"]
-    totals = df[score_cols].sum(axis=1)
-    lines.append(f"Team avg total: {totals.mean():,.0f}  |  Best match: {totals.max():,.0f}  |  Worst: {totals.min():,.0f}")
+    if complete.empty:
+        lines.append("Team totals: no complete matches yet.")
+    else:
+        totals = complete[score_cols].sum(axis=1)
+        lines.append(f"Team avg total: {totals.mean():,.0f}  |  Best match: {totals.max():,.0f}  |  Worst: {totals.min():,.0f}")
 
     trend = team_trend(df, window=5)
     if len(trend) >= 2:
@@ -143,7 +167,7 @@ def format_report(df, k=0.5):
             direction = "[DOWN]"
         else:
             direction = "[FLAT]"
-        lines.append(f"Team trend (last {min(5, len(df))} matches): {direction} {diff:+,.0f}")
+        lines.append(f"Team trend (last {min(5, len(trend))} complete matches): {direction} {diff:+,.0f}")
     lines.append("")
 
     # Tier summary

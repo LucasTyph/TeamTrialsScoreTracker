@@ -48,28 +48,24 @@ def _score_name(name, text_entries):
     fraction of the name's word-parts are found in the crop.  Short
     parts (< 3 chars) require an exact standalone word match to avoid
     spurious hits like 'O' matching 'Oguri' or 'Condor'.
+
+    A single OCR word equal to the whole name without spaces (e.g.
+    "GoldShip" for "Gold Ship") counts as a full match.
     """
     name_parts = name.lower().split()
-    name_no_space = name.lower().replace(" ", "")
-    if not name_parts:
+    if not name_parts or not text_entries:
         return 0.0, None
+
+    name_no_space = "".join(name_parts)
+    for e in text_entries:
+        if e["text"].lower() == name_no_space:
+            return 1.0, e
 
     matched = 0
     best_entry = None
-
     for part in name_parts:
         for e in text_entries:
-            w = e["text"].lower()
-            if _part_matches(part, w):
-                matched += 1
-                if best_entry is None:
-                    best_entry = e
-                break
-        else:
-            # Part not found as substring — try matching the whole
-            # spaceless name against the OCR word (handles "GoldShip"
-            # vs "Gold Ship").
-            if w == name_no_space:
+            if _part_matches(part, e["text"].lower()):
                 matched += 1
                 if best_entry is None:
                     best_entry = e
@@ -95,29 +91,24 @@ SCORE_MIN = 10_000
 SCORE_MAX = 200_000
 
 
-def _find_score_number(numbers, row_tolerance):
-    """Find the score number from a list of detected numbers.
+def _in_range(text):
+    try:
+        val = _clean_number(text)
+    except ValueError:
+        return False
+    return SCORE_MIN <= val <= SCORE_MAX
 
-    Scores are always in [10_000, 200_000].  Strategy:
-    1. Return any single number already in range (fast path).
-    2. Merge adjacent small numbers on the same row; return if merged
-       value falls in range.  Tries X-sorted order first, then reverse
-       (handles trailing-digit OCR like "pts6").
-    3. Otherwise return None (no valid score found).
+
+def _merged_scores(numbers, row_tolerance):
+    """Merge adjacent small fragments on the same row into valid scores.
+
+    Returns one merged entry per group of fragments whose concatenation
+    falls in [SCORE_MIN, SCORE_MAX].  Tries X-sorted order first, then
+    reverse (handles trailing-digit OCR like "pts6").
     """
     if not numbers:
-        return None
-
-    # Fast path: a single number already in the valid range
-    for n in numbers:
-        val = _clean_number(n["text"])
-        if SCORE_MIN <= val <= SCORE_MAX:
-            return n
-
-    # Merge adjacent small numbers on the same row
-    numbers.sort(key=lambda n: n["x"])
-    groups = []
-    current = [numbers[0]]
+        return []
+    numbers = sorted(numbers, key=lambda n: n["x"])
 
     has_extracted = any(n.get("_extracted") for n in numbers)
     has_regular = any(not n.get("_extracted") for n in numbers)
@@ -126,11 +117,12 @@ def _find_score_number(numbers, row_tolerance):
     # wider gap tolerance so they still get grouped.
     merge_gap = 100 if (has_extracted and has_regular) else 20
 
+    groups = []
+    current = [numbers[0]]
     for n in numbers[1:]:
         prev = current[-1]
         same_row = abs((n["y"] + n["h"] / 2) - (prev["y"] + prev["h"] / 2)) <= row_tolerance
         close = n["x"] - (prev["x"] + prev["w"]) < merge_gap
-
         if same_row and close:
             current.append(n)
         else:
@@ -138,36 +130,40 @@ def _find_score_number(numbers, row_tolerance):
             current = [n]
     groups.append(current)
 
+    merged = []
     for group in groups:
         if len(group) < 2:
             continue
-
         extracted = [n for n in group if n.get("_extracted")]
         others = [n for n in group if not n.get("_extracted")]
-        try_reverse = False
-        if extracted and others:
-            max_extracted_x = max(n["x"] for n in extracted)
-            min_other_x = min(n["x"] for n in others)
-            try_reverse = max_extracted_x > min_other_x
-
+        try_reverse = bool(extracted and others) and (
+            max(n["x"] for n in extracted) > min(n["x"] for n in others)
+        )
         orders = [list(reversed(group)), group] if try_reverse else [group, list(reversed(group))]
-
         for order in orders:
             merged_text = "".join(e["text"] for e in order)
-            try:
-                val = _clean_number(merged_text)
-            except ValueError:
-                continue
-            if SCORE_MIN <= val <= SCORE_MAX:
-                return {
+            if _in_range(merged_text):
+                merged.append({
                     "text": merged_text,
                     "x": order[0]["x"],
                     "y": order[0]["y"],
                     "w": order[-1]["x"] + order[-1]["w"] - order[0]["x"],
                     "h": max(e["h"] for e in order),
-                }
+                })
+                break
+    return merged
 
-    return None
+
+def _collect_valid_scores(numbers, row_tolerance):
+    """All valid scores (10k–200k): single numbers if any, else merged fragments."""
+    valid = [n for n in numbers if _in_range(n["text"])]
+    return valid or _merged_scores(numbers, row_tolerance)
+
+
+def _find_score_number(numbers, row_tolerance):
+    """The first valid score in a crop, or None."""
+    valid = _collect_valid_scores(numbers, row_tolerance)
+    return valid[0] if valid else None
 
 
 def _locate_score(text_entry, numbers, row_tolerance):
@@ -221,76 +217,66 @@ def _extract_entries(ocr_data):
     return entries
 
 
+def _split_entries(ocr_data):
+    """(text_entries, numbers) for one OCR result, with fused digits extracted."""
+    entries = _extract_entries(ocr_data)
+    numbers = [e for e in entries if _is_number(e["text"])]
+    text_entries = [e for e in entries if not _is_number(e["text"])]
+    # OCR sometimes fuses digits with text (e.g. "6pts").  Extract those
+    # fragments into the numbers list so the merge step can use them.
+    _extract_numeric_fragments(text_entries, numbers)
+    return text_entries, numbers
+
+
+def find_score(ocr_data, row_tolerance):
+    """The valid score in a crop regardless of whether a name was read, or None."""
+    _, numbers = _split_entries(ocr_data)
+    entry = _find_score_number(numbers, row_tolerance)
+    return _clean_number(entry["text"]) if entry else None
+
+
 def parse_single_match(ocr_data, character_names, row_tolerance, fuzzy_threshold, claimed=None, verbose=False):
     """Parse one crop and return at most ONE (name, score) pair.
 
     Each crop sits above a single green bar, so it should contain exactly
     one character entry.  We find the best-matching name and its score.
     """
-    if claimed is None:
-        claimed = set()
-    entries = _extract_entries(ocr_data)
-    if not entries:
-        return {}
-
-    numbers = [e for e in entries if _is_number(e["text"])]
-    text_entries = [e for e in entries if not _is_number(e["text"])]
-
-    # OCR sometimes fuses digits with text (e.g. "6pts").  Extract those
-    # fragments into the numbers list so the merge step can use them.
-    _extract_numeric_fragments(text_entries, numbers)
+    claimed = claimed or set()
+    text_entries, numbers = _split_entries(ocr_data)
 
     if verbose:
         print(f"    Words: {[e['text'] for e in text_entries]}")
         print(f"    Numbers: {[e['text'] for e in numbers]}")
 
-    best_name = None
-    best_score = None
-    best_ratio = 0
+    score_entry = _find_score_number(numbers, row_tolerance)
+    if score_entry is None:
+        return {}
+    score = _clean_number(score_entry["text"])
 
     candidates = []
     for name in character_names:
         if name in claimed:
             continue
         ratio, match_entry = _score_name(name, text_entries)
-        if ratio < fuzzy_threshold:
-            continue
+        if ratio >= fuzzy_threshold:
+            candidates.append((ratio, name, match_entry["text"]))
+    if not candidates:
+        return {}
 
-        score_entry = _find_score_number(numbers, row_tolerance)
-        if score_entry is None:
-            continue
+    # Highest ratio wins; ties go to the earlier roster name.
+    best_ratio, best_name, _ = max(candidates, key=lambda c: c[0])
 
-        candidates.append((ratio, name, _clean_number(score_entry["text"]), match_entry["text"]))
-
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_name = name
-            best_score = _clean_number(score_entry["text"])
-
-    if verbose and candidates:
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        for ratio, name, score, matched_text in candidates:
+    if verbose:
+        for ratio, name, matched_text in sorted(candidates, key=lambda c: c[0], reverse=True):
             marker = ">>>" if name == best_name else "   "
             print(f"    {marker} {ratio:.2f}  {name:20s} score={score}  (matched word: '{matched_text}')")
 
-    if best_name is not None:
-        return {best_name: best_score}
-    return {}
+    return {best_name: score}
 
 
 def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
     """Fallback: parse full-image OCR (used when no green bars detected)."""
-    entries = _extract_entries(ocr_data)
-    if not entries:
-        return {}
-
-    all_numbers = [e for e in entries if _is_number(e["text"])]
-    text_entries = [e for e in entries if not _is_number(e["text"])]
-
-    # Extract numeric fragments from words
-    _extract_numeric_fragments(text_entries, all_numbers)
-
-    # Build a list of valid score numbers using range-aware merging
+    text_entries, all_numbers = _split_entries(ocr_data)
     valid_scores = _collect_valid_scores(all_numbers, row_tolerance)
 
     results = {}
@@ -303,68 +289,3 @@ def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
             results[name] = _clean_number(score_entry["text"])
 
     return results
-
-
-def _collect_valid_scores(numbers, row_tolerance):
-    """Return only numbers that are valid scores (10k–200k), merging fragments."""
-    if not numbers:
-        return []
-
-    valid = []
-    for n in numbers:
-        try:
-            val = _clean_number(n["text"])
-        except ValueError:
-            continue
-        if SCORE_MIN <= val <= SCORE_MAX:
-            valid.append(n)
-
-    if valid:
-        return valid
-
-    # No single number in range — try merging adjacent fragments
-    numbers.sort(key=lambda n: n["x"])
-    groups = []
-    current = [numbers[0]]
-    has_extracted = any(n.get("_extracted") for n in numbers)
-    has_regular = any(not n.get("_extracted") for n in numbers)
-    merge_gap = 100 if (has_extracted and has_regular) else 20
-    for n in numbers[1:]:
-        prev = current[-1]
-        same_row = abs((n["y"] + n["h"] / 2) - (prev["y"] + prev["h"] / 2)) <= row_tolerance
-        close = n["x"] - (prev["x"] + prev["w"]) < merge_gap
-        if same_row and close:
-            current.append(n)
-        else:
-            groups.append(current)
-            current = [n]
-    groups.append(current)
-
-    for group in groups:
-        if len(group) < 2:
-            continue
-        extracted = [n for n in group if n.get("_extracted")]
-        others = [n for n in group if not n.get("_extracted")]
-        try_reverse = False
-        if extracted and others:
-            max_extracted_x = max(n["x"] for n in extracted)
-            min_other_x = min(n["x"] for n in others)
-            try_reverse = max_extracted_x > min_other_x
-        orders = [list(reversed(group)), group] if try_reverse else [group, list(reversed(group))]
-        for order in orders:
-            merged_text = "".join(e["text"] for e in order)
-            try:
-                val = _clean_number(merged_text)
-            except ValueError:
-                continue
-            if SCORE_MIN <= val <= SCORE_MAX:
-                valid.append({
-                    "text": merged_text,
-                    "x": order[0]["x"],
-                    "y": order[0]["y"],
-                    "w": order[-1]["x"] + order[-1]["w"] - order[0]["x"],
-                    "h": max(e["h"] for e in order),
-                })
-                break
-
-    return valid

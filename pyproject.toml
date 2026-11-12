@@ -4,8 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "score-tracker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Extract structured score data from game screenshots and track character performance over time"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     "pytesseract>=0.3.10",
@@ -13,7 +15,20 @@ dependencies = [
     "pandas>=2.0.0",
     "numpy>=1.24",
     "pystray>=0.19.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
-score-tracker = "main:main"
+score-tracker = "score_tracker.cli:main"
+
+[tool.setuptools]
+packages = ["score_tracker"]
+
+[tool.setuptools.package-data]
+score_tracker = ["assets/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
