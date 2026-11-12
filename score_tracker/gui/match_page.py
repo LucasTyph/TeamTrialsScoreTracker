@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -40,6 +41,7 @@ class MatchPage(QWidget):
     # (name, score, row or None)
     resolve_requested = Signal(str, int, object)
     ignore_row_requested = Signal(object)
+    clipboard_toggled = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -78,6 +80,11 @@ class MatchPage(QWidget):
 
         self.hint = label("", "muted", wrap=True)
         self.layout_.addWidget(self.hint)
+        self.clipboard_box = QCheckBox("Watch the clipboard for Win+Shift+S snips")
+        self.clipboard_box.setChecked(True)
+        self.clipboard_box.setToolTip("Any image you copy is read as a Score Info screenshot while this is on")
+        self.clipboard_box.toggled.connect(self.clipboard_toggled)
+        self.layout_.addWidget(self.clipboard_box)
 
         self.grid_card, grid_lay = card()
         grid_lay.addWidget(label("Your teams", "h2"))
@@ -127,10 +134,12 @@ class MatchPage(QWidget):
             self.subtitle.setText(f"{n_found} of {n_total} characters found")
         else:
             self.subtitle.setText("Waiting for the first screenshot")
+        snips = " Win+Shift+S snips work too." if self.clipboard_box.isChecked() else ""
         self.hint.setText(
             f"In the game, open a race's Score Info and press {hotkey} (or Capture game). "
-            f"Then drag the list to the bottom and press {hotkey} again. Win+Shift+S snips work too. "
-            "The match saves itself once all characters are found."
+            f"Then drag the list to the bottom and press {hotkey} again.{snips} "
+            "The match saves itself once all characters are found. Closing the app saves an "
+            "unfinished match as partial."
         )
 
         in_progress = bool(final) or bool(acc.unnamed)

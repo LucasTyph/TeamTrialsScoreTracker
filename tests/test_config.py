@@ -11,7 +11,6 @@ def test_creates_template_seeded_from_legacy_csv(tmp_path):
     assert settings.roster == ("Gold Ship", "King Halo")
     assert settings.teams == {}
     assert (tmp_path / "settings.toml").exists()
-    assert settings.matches_per_week == 35
 
 
 def test_empty_template_without_legacy_data(tmp_path):
@@ -20,12 +19,12 @@ def test_empty_template_without_legacy_data(tmp_path):
 
 def test_overrides(tmp_path):
     (tmp_path / "settings.toml").write_text(
-        'roster = ["A", "B"]\nmatches_per_week = 30\nrow_tolerance = 25\n'
+        'roster = ["A", "B"]\npending_timeout_minutes = 5\nrow_tolerance = 25\n'
         r"tesseract_cmd = 'D:\Tools\tesseract.exe'" "\n"
     )
     s = load_settings(tmp_path)
     assert s.roster == ("A", "B")
-    assert s.matches_per_week == 30
+    assert s.pending_timeout_minutes == 5.0
     assert s.row_tolerance == 25
     assert s.tesseract_cmd == r"D:\Tools\tesseract.exe"
     assert s.scores_path == tmp_path / "scores.csv"
@@ -49,7 +48,7 @@ def test_retired_settings_are_ignored(tmp_path):
 def test_save_round_trip(tmp_path):
     teams = {"Air Groove": "Sprint", "Oguri Cap": "Dirt"}
     s = Settings(roster=("Air Groove", "Oguri Cap", "Old Friend"), teams=teams, data_dir=tmp_path,
-                 matches_per_week=28, tesseract_cmd=r"E:\ocr\tesseract.exe", target_score=1_100_000)
+                 capture_hotkey="f9", tesseract_cmd=r"E:\ocr\tesseract.exe")
     save_settings(s)
     loaded = load_settings(tmp_path)
     assert loaded == s

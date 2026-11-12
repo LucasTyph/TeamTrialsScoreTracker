@@ -148,6 +148,33 @@ QScrollBar::handle:vertical {{ background: {SURFACE_3}; border-radius: 4px; min-
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle:horizontal {{ background: {SURFACE_3}; border-radius: 4px; min-width: 30px; }}
+QFrame#toast {{
+    background: {SURFACE_3};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QLabel#toastTitle {{ font-weight: 600; }}
+QLabel#chip {{
+    border-radius: 9px; padding: 2px 9px; font-size: 8.5pt; font-weight: 600;
+    background: {SURFACE_3}; color: {MUTED};
+}}
+QLabel#bigValue {{ font-size: 17pt; font-weight: 600; }}
+QFrame#teamCard {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QCheckBox {{ spacing: 8px; color: {MUTED}; }}
+QCheckBox::indicator {{
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 1px solid {BORDER}; background: {BG};
+}}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+QTableWidget::item:selected {{ background: {SURFACE_3}; }}
+QTableWidget#compactTable {{ font-size: 9pt; }}
+QTableWidget#compactTable::item {{ padding: 4px 3px; }}
+QTableWidget#compactTable QHeaderView::section {{ padding: 4px 3px; font-size: 8.5pt; }}
+QHeaderView::section:hover {{ color: {TEXT}; }}
 QToolTip {{ background: {SURFACE_3}; color: {TEXT}; border: 1px solid {BORDER}; padding: 5px; }}
 QMenu {{ background: {SURFACE_2}; border: 1px solid {BORDER}; padding: 4px; }}
 QMenu::item {{ padding: 6px 22px; border-radius: 5px; }}

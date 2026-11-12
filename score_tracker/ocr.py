@@ -9,7 +9,7 @@ from difflib import get_close_matches
 
 import numpy as np
 import pytesseract
-from PIL import Image, ImageGrab, ImageOps
+from PIL import Image, ImageOps
 
 _tesseract_path: str | None = None
 
@@ -34,22 +34,9 @@ def tesseract_available() -> bool:
     return _tesseract_path is not None
 
 
-def grab_clipboard():
-    """Grab image from clipboard. Returns PIL Image or None."""
-    img = ImageGrab.grabclipboard()
-    if isinstance(img, Image.Image):
-        return img
-    return None
-
-
 def extract_data(image):
     """Run OCR and return positional text data dict (image_to_data)."""
     return pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-
-
-def extract_text(image):
-    """Run OCR and return plain text string."""
-    return pytesseract.image_to_string(image)
 
 
 # Preprocessing variants tried in order until a crop yields a name and score.

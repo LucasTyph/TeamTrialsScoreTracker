@@ -53,6 +53,14 @@ def _process_name(hwnd) -> str:
         kernel32.CloseHandle(handle)
 
 
+def game_in_front(process_name: str) -> bool:
+    """Whether the game's window is the foreground window."""
+    if sys.platform != "win32":
+        return False
+    hwnd = user32.GetForegroundWindow()
+    return bool(hwnd) and _process_name(hwnd) == process_name.lower()
+
+
 def find_window(process_name: str):
     """Handle of the largest visible window of a process, or None."""
     if sys.platform != "win32":

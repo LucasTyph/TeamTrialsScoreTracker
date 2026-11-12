@@ -1,4 +1,4 @@
-"""Roster: your five teams of three, plus weekly and capture settings."""
+"""Roster: your five teams of three, plus capture settings."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from dataclasses import replace
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QCompleter,
     QFormLayout,
     QFrame,
@@ -15,7 +14,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -23,9 +21,6 @@ from PySide6.QtWidgets import (
 from ..characters import KNOWN_CHARACTERS, best_name
 from ..config import DISTANCES, TEAM_SIZE, Settings
 from .widgets import card, distance_badge, label
-
-WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
 
 class RosterPage(QWidget):
     settings_saved = Signal(object)  # Settings
@@ -92,35 +87,27 @@ class RosterPage(QWidget):
         lay.addWidget(teams_card)
 
         prefs_card, prefs_lay = card()
-        prefs_lay.addWidget(label("Weekly goal and capture", "h2"))
+        prefs_lay.addWidget(label("Capture", "h2"))
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(10)
-        self.per_week = QSpinBox()
-        self.per_week.setRange(1, 200)
-        self.reset_day = QComboBox()
-        self.reset_day.addItems(WEEKDAYS)
-        self.reset_hour = QSpinBox()
-        self.reset_hour.setRange(0, 23)
-        self.reset_hour.setSuffix(":00 UTC")
-        reset = QHBoxLayout()
-        reset.addWidget(self.reset_day)
-        reset.addWidget(self.reset_hour)
-        reset.addStretch(1)
         self.hotkey = QLineEdit()
         self.hotkey.setPlaceholderText("ctrl+alt+s")
         self.process = QLineEdit()
-        for field in (self.per_week, self.hotkey, self.process):
-            field.setMaximumWidth(260)
-        form.addRow("Matches per week", self.per_week)
-        form.addRow("Week resets", reset)
+        for field in (self.hotkey, self.process):
+            field.setFixedWidth(280)
         form.addRow("Capture hotkey", self.hotkey)
         form.addRow("Game process", self.process)
         prefs_lay.addLayout(form)
         prefs_lay.addWidget(label("The hotkey works from anywhere and captures the game window, "
-                                  "even if it's behind other windows. Changes apply after saving.", "faint"))
-        lay.addWidget(prefs_card)
+                                  "even if it's behind other windows. Changes apply after saving.", "faint",
+                                  wrap=True))
+        prefs_card.setMaximumWidth(560)
+        prefs_row = QHBoxLayout()
+        prefs_row.addWidget(prefs_card, 1)
+        prefs_row.addStretch(1)
+        lay.addLayout(prefs_row)
         lay.addStretch(1)
 
     # ------------------------------------------------------------------
@@ -137,9 +124,6 @@ class RosterPage(QWidget):
                 edit.setCompleter(completer)
                 edit.setText(members[i] if i < len(members) else "")
         self.unassigned.setText(", ".join(n for n in settings.roster if n not in settings.teams))
-        self.per_week.setValue(settings.matches_per_week)
-        self.reset_day.setCurrentIndex(settings.week_reset_weekday)
-        self.reset_hour.setValue(settings.week_reset_hour_utc)
         self.hotkey.setText(settings.capture_hotkey)
         self.process.setText(settings.game_process)
         self.status.setText("")
@@ -188,9 +172,6 @@ class RosterPage(QWidget):
         hotkey = self.hotkey.text().strip().lower() or "ctrl+alt+s"
         settings = replace(
             self._settings.with_roster(roster, teams),
-            matches_per_week=self.per_week.value(),
-            week_reset_weekday=self.reset_day.currentIndex(),
-            week_reset_hour_utc=self.reset_hour.value(),
             capture_hotkey=hotkey,
             game_process=self.process.text().strip() or self._settings.game_process,
         )

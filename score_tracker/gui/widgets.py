@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import theme
 
@@ -104,3 +112,73 @@ def row(*widgets, spacing=8, stretch_last=False) -> QWidget:
     if stretch_last:
         lay.addStretch(1)
     return w
+
+
+class SortItem(QTableWidgetItem):
+    """Table item that sorts by a value instead of its text."""
+
+    def __init__(self, text, key=None, align=Qt.AlignRight | Qt.AlignVCenter):
+        super().__init__(text)
+        self.key = key
+        self.setTextAlignment(align)
+
+    def __lt__(self, other):
+        a, b = self.key, getattr(other, "key", None)
+        if a is None or b is None:
+            # Missing values sort last in ascending order
+            return a is not None and b is None
+        return a < b
+
+
+class Toast(QFrame):
+    """A message banner that slides in at the bottom right of a window."""
+
+    KINDS = {"info": theme.ACCENT, "success": theme.SUCCESS, "warning": theme.WARNING, "error": theme.DANGER}
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("toast")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 10, 0)
+        lay.setSpacing(12)
+        self.stripe = QFrame()
+        self.stripe.setFixedWidth(4)
+        lay.addWidget(self.stripe)
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 10, 0, 10)
+        text.setSpacing(2)
+        self.title = label("", "toastTitle")
+        self.message = label("", "muted", wrap=True)
+        text.addWidget(self.title)
+        text.addWidget(self.message)
+        lay.addLayout(text, 1)
+        close = QPushButton("✕")
+        close.setObjectName("iconButton")
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(self.hide)
+        lay.addWidget(close, 0, Qt.AlignTop)
+        self.setFixedWidth(360)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.hide)
+        self.hide()
+
+    def show_message(self, title, message="", kind="info", msecs=5000):
+        color = self.KINDS.get(kind, theme.ACCENT)
+        self.stripe.setStyleSheet(f"background: {color}; border-top-left-radius: 10px;"
+                                  "border-bottom-left-radius: 10px;")
+        self.title.setText(title)
+        self.message.setText(message)
+        self.message.setVisible(bool(message))
+        self.adjustSize()
+        self.reposition()
+        self.show()
+        self.raise_()
+        self.timer.start(msecs)
+
+    def reposition(self):
+        parent = self.parentWidget()
+        if parent is not None:
+            self.adjustSize()
+            self.move(parent.width() - self.width() - 20, parent.height() - self.height() - 20)

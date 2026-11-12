@@ -33,7 +33,11 @@ DISTANCES = ("Sprint", "Mile", "Medium", "Long", "Dirt")
 TEAM_SIZE = 3
 
 # Settings from older versions that no longer do anything (ignored if present)
-_RETIRED = {"adjusted_score_k", "crop_above_bar"}
+_RETIRED = {
+    "adjusted_score_k", "crop_above_bar",
+    # Weekly goals (removed in 0.4)
+    "matches_per_week", "week_reset_weekday", "week_reset_hour_utc", "target_score",
+}
 
 
 class SettingsError(Exception):
@@ -64,12 +68,6 @@ class Settings:
     # are in the roster but not in this mapping.
     teams: dict = field(default_factory=dict)
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    # Weekly goal: matches you play per week, and when the week resets (UTC)
-    matches_per_week: int = 35
-    week_reset_weekday: int = 0  # 0 = Monday
-    week_reset_hour_utc: int = 0
-    # A score you're aiming for (e.g. the promotion line); 0 = none
-    target_score: int = 0
     # Window capture
     game_process: str = "umamusumeprettyderby.exe"
     capture_hotkey: str = "ctrl+alt+s"

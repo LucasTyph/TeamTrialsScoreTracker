@@ -1,9 +1,11 @@
-"""Convenience launcher: ``python main.py [--analyze|--tray|--debug]``.
+"""Convenience launcher: ``python main.py`` opens the app.
 
 Equivalent to ``python -m score_tracker``.
 """
 
-from score_tracker.cli import main
+import sys
+
+from score_tracker.gui.app import run
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run())

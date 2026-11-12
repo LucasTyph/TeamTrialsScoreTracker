@@ -1,4 +1,4 @@
-"""Screenshot → scores: the one parsing pipeline used by the app, CLI and tests."""
+"""Screenshot → scores: the one parsing pipeline used by the app and tests."""
 
 from __future__ import annotations
 

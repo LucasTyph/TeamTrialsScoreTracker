@@ -76,3 +76,19 @@ def test_delete_match(settings):
     append_match({"Alpha": 2}, settings)
     assert delete_match(1, settings) == 1
     assert load_scores(settings)["match_id"].tolist() == [2]
+
+
+def test_legacy_header_with_newer_rows_appended(settings):
+    """A 4-column file that later got 5-column rows appended still loads."""
+    from dataclasses import replace
+    s = replace(settings, teams={"Alpha": "Sprint"})
+    s.scores_path.write_text(
+        "match_id,timestamp,character,score\n"
+        "1,2026-01-01 10:00,Alpha,10000\n"
+        "2,2026-01-02 10:00,Alpha,11000,Mile\n"
+    )
+    df = load_scores(s)
+    assert df["distance"].tolist() == ["Sprint", "Mile"]
+    assert s.scores_path.read_text().splitlines()[0] == "match_id,timestamp,character,score,distance"
+    append_match({"Alpha": 12000}, s)
+    assert len(load_scores(s)) == 3

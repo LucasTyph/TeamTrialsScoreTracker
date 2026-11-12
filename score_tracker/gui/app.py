@@ -1,4 +1,7 @@
-"""The desktop app: tray icon, capture hotkey, and the main window."""
+"""The desktop app: main window, capture hotkey and clipboard watching.
+
+``run()`` is the program's entry point (``python -m score_tracker``).
+"""
 
 from __future__ import annotations
 
@@ -9,35 +12,35 @@ import sys
 import threading
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QIcon, QPixmap
+from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QHBoxLayout,
     QMainWindow,
-    QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
-    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import ocr
-from ..analysis import build_report
-from ..capture import CaptureError, capture_game
-from ..config import ASSETS_DIR, Settings, save_settings
+from ..analysis import analyze
+from ..capture import CaptureError, capture_game, game_in_front
+from ..config import ASSETS_DIR, Settings, SettingsError, load_settings, save_settings
 from ..pipeline import detect_roster
 from ..session import MatchSession
-from ..storage import append_match, delete_match, load_scores
+from ..storage import append_match, delete_match, load_scores, migrate_legacy
 from . import theme
 from .analysis_page import AnalysisPage
 from .match_page import MatchPage
 from .roster_page import RosterPage
-from .widgets import label, qimage_to_pil
+from .widgets import Toast, label, qimage_to_pil
 
 logger = logging.getLogger(__name__)
 
+APP_NAME = "Team Trials Score Tracker"
 WM_HOTKEY = 0x0312
 HOTKEY_ID = 0x5354
 _MODS = {"ctrl": 0x2, "control": 0x2, "alt": 0x1, "shift": 0x4, "win": 0x8}
@@ -88,10 +91,12 @@ class _Job(QRunnable):
 
 class MainWindow(QMainWindow):
     hotkey_pressed = Signal()
+    closing = Signal()  # emitted (synchronously) before the window closes
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Team Trials Score Tracker")
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(str(ASSETS_DIR / "icon.png")))
         self.resize(1180, 820)
         self.setMinimumSize(900, 600)
 
@@ -138,12 +143,17 @@ class MainWindow(QMainWindow):
         lay.addWidget(sidebar)
         lay.addWidget(self.pages, 1)
 
+        self.toast = Toast(self)
+
     def show_page(self, index):
         self.nav_buttons[index].setChecked(True)
         self.pages.setCurrentIndex(index)
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        if self.isMinimized():
+            self.showNormal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.toast.reposition()
 
     def nativeEvent(self, event_type, message):
         if sys.platform == "win32" and event_type == b"windows_generic_MSG":
@@ -155,9 +165,8 @@ class MainWindow(QMainWindow):
         return super().nativeEvent(event_type, message)
 
     def closeEvent(self, event):
-        # Closing the window keeps the app running in the tray
-        event.ignore()
-        self.hide()
+        self.closing.emit()
+        super().closeEvent(event)
 
 
 class TrackerApp(QObject):
@@ -175,31 +184,25 @@ class TrackerApp(QObject):
         self._last_clip_hash = None
         self._storage_lock = threading.Lock()
         self._hotkey_registered = False
+        self._shut_down = False
 
         self.session = MatchSession(settings, on_save=self._store)
         self.match_saved.connect(self._on_saved)
 
         self.window = MainWindow()
         self.window.hotkey_pressed.connect(self.capture)
+        self.window.closing.connect(self.shutdown)
         mp = self.window.match_page
         mp.capture_requested.connect(self.capture)
         mp.save_requested.connect(lambda: self.session.save())
         mp.discard_requested.connect(self._discard)
         mp.resolve_requested.connect(self._resolve)
         mp.ignore_row_requested.connect(self._ignore_row)
+        mp.clipboard_toggled.connect(self._set_watch)
         rp = self.window.roster_page
         rp.settings_saved.connect(self._apply_settings)
         rp.detect_requested.connect(self._detect_roster)
-        ap = self.window.analysis_page
-        ap.target_changed.connect(self._set_target)
-        ap.delete_match_requested.connect(self._delete_match)
-
-        self.tray = QSystemTrayIcon(QIcon(str(ASSETS_DIR / "icon.png")), self)
-        self.tray.setToolTip("Team Trials Score Tracker")
-        self.tray.activated.connect(self._tray_activated)
-        self.tray.messageClicked.connect(lambda: self.window.show_page(0))
-        self._build_tray_menu()
-        self.tray.show()
+        self.window.analysis_page.delete_match_requested.connect(self._delete_match)
 
         QGuiApplication.clipboard().dataChanged.connect(self._clipboard_changed)
         self._remember_clipboard()
@@ -211,33 +214,9 @@ class TrackerApp(QObject):
         self._register_hotkey()
         self.refresh_all()
 
-    # --- tray -------------------------------------------------------------
-
-    def _build_tray_menu(self):
-        menu = QMenu()
-        menu.addAction("Open", lambda: self.window.show_page(self.window.pages.currentIndex()))
-        menu.addAction("Capture game now", self.capture)
-        menu.addSeparator()
-        self.pending_action = menu.addAction("Current match", lambda: self.window.show_page(0))
-        menu.addAction("Analysis", lambda: self.window.show_page(1))
-        menu.addAction("Roster", lambda: self.window.show_page(2))
-        menu.addSeparator()
-        self.watch_action = QAction("Watch clipboard for snips", menu, checkable=True)
-        self.watch_action.setChecked(True)
-        self.watch_action.toggled.connect(self._set_watch)
-        menu.addAction(self.watch_action)
-        menu.addSeparator()
-        menu.addAction("Exit", self.quit)
-        self._menu = menu
-        self.tray.setContextMenu(menu)
-
-    def _tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self.window.show_page(self.window.pages.currentIndex())
-
-    def notify(self, title, message):
+    def notify(self, title, message="", kind="info"):
         logger.info("Notify: %s - %s", title, message.replace("\n", " | "))
-        self.tray.showMessage(title, message, QSystemTrayIcon.Information, 4000)
+        self.window.toast.show_message(title, message, kind)
 
     # --- hotkey -------------------------------------------------------------
 
@@ -252,14 +231,14 @@ class TrackerApp(QObject):
         parsed = parse_hotkey(self.settings.capture_hotkey)
         if parsed is None:
             self.notify("Hotkey not set", f"“{self.settings.capture_hotkey}” isn't a valid hotkey. "
-                                          "Fix it on the Roster page.")
+                                          "Fix it on the Roster page.", "warning")
             return
         mods, vk = parsed
         if user32.RegisterHotKey(hwnd, HOTKEY_ID, mods | 0x4000, vk):  # MOD_NOREPEAT
             self._hotkey_registered = True
         else:
             self.notify("Hotkey unavailable", f"{self.settings.capture_hotkey.upper()} is used by another "
-                                              "program. Pick another one on the Roster page.")
+                                              "program. Pick another one on the Roster page.", "warning")
 
     # --- capturing ------------------------------------------------------------
 
@@ -267,7 +246,7 @@ class TrackerApp(QObject):
         try:
             img = capture_game(self.settings.game_process)
         except CaptureError as e:
-            self.notify("Couldn't capture the game", str(e))
+            self.notify("Couldn't capture the game", str(e), "error")
             return
         self.process(img)
 
@@ -285,6 +264,7 @@ class TrackerApp(QObject):
         self.watch_clipboard = on
         if on:
             self._remember_clipboard()
+        self.refresh_match()
 
     def _clipboard_changed(self):
         if not self.watch_clipboard:
@@ -313,7 +293,7 @@ class TrackerApp(QObject):
     def _processed(self, outcome):
         self.busy -= 1
         if outcome.ignored:
-            self.notify("No scores found", "That screenshot doesn't look like a Score Info screen.")
+            self.notify("No scores found", "That screenshot doesn't look like a Score Info screen.", "warning")
         else:
             completed = any(s.complete for s in outcome.saved)
             if not completed:
@@ -325,7 +305,7 @@ class TrackerApp(QObject):
 
     def _failed(self, message):
         self.busy -= 1
-        self.notify("Something went wrong", message)
+        self.notify("Something went wrong", message, "error")
         self.refresh_match()
 
     # --- saving -------------------------------------------------------------
@@ -338,12 +318,17 @@ class TrackerApp(QObject):
 
     def _on_saved(self, saved):
         self.last_saved = saved
+        if self._shut_down:
+            return
         total = sum(saved.scores.values())
         title = "Match saved" if saved.complete else "Partial match saved"
         detail = f"{len(saved.scores)} characters · total {total:,}"
         if saved.inferred:
             detail += "\nMatched by elimination: " + ", ".join(n for n, _ in saved.inferred)
-        self.notify(title, detail)
+        self.notify(title, detail, "success" if saved.complete else "info")
+        # Flash the taskbar button when you're in the game rather than here
+        if game_in_front(self.settings.game_process) or not self.window.isActiveWindow():
+            QApplication.alert(self.window)
         self.refresh_all()
 
     def _discard(self):
@@ -374,11 +359,6 @@ class TrackerApp(QObject):
             self._register_hotkey()
         self.refresh_all()
 
-    def _set_target(self, value):
-        from dataclasses import replace
-        if value != self.settings.target_score:
-            self._apply_settings(replace(self.settings, target_score=value))
-
     def _detect_roster(self):
         try:
             img = capture_game(self.settings.game_process)
@@ -404,17 +384,15 @@ class TrackerApp(QObject):
         acc = self.session.pending
         self.window.match_page.refresh(self.settings, acc, busy=self.busy > 0, last_saved=self.last_saved)
         found, total = len(acc.final_scores()), len(self.settings.roster)
-        review = len(acc.needs_review)
-        text = f"Current match ({found}/{total})" + (f" · {review} to review" if review else "")
-        self.pending_action.setText(text)
-        self.tray.setToolTip(f"Team Trials Score Tracker\n{text}")
+        in_progress = bool(found or acc.unnamed)
+        self.window.setWindowTitle(f"{APP_NAME} · {found}/{total}" if in_progress else APP_NAME)
         hotkey = self.settings.capture_hotkey.upper() if self._hotkey_registered else "no hotkey"
-        self.window.status.setText(f"Capture hotkey: {hotkey}")
+        clip = "on" if self.watch_clipboard else "off"
+        self.window.status.setText(f"Capture hotkey: {hotkey}\nClipboard snips: {clip}")
         self.window.status.setToolTip(f"Data folder: {self.settings.data_dir}")
 
     def refresh_analysis(self):
-        report = build_report(load_scores(self.settings), self.settings)
-        self.window.analysis_page.refresh(report, self.settings.target_score)
+        self.window.analysis_page.refresh(analyze(load_scores(self.settings), self.settings))
 
     def refresh_all(self):
         self.refresh_match()
@@ -422,18 +400,21 @@ class TrackerApp(QObject):
         names = set(load_scores(self.settings)["character"].unique())
         self.window.roster_page.load(self.settings, names)
 
-    def quit(self):
+    def shutdown(self):
+        """Finish reading screenshots, save an unfinished match as partial, release the hotkey."""
+        if self._shut_down:
+            return
+        self._shut_down = True
+        self.timer.stop()
+        self.pool.waitForDone(10_000)
         if self.session.pending_count:
             self.session.save()
         if sys.platform == "win32" and self._hotkey_registered:
             ctypes.windll.user32.UnregisterHotKey(int(self.window.winId()), HOTKEY_ID)
-        self.pool.waitForDone(5000)
-        self.tray.hide()
-        self.app.quit()
+            self._hotkey_registered = False
 
 
-def run(settings: Settings, show_window=True) -> int:
-    """Start the app (tray icon + window). Returns the exit code."""
+def _setup_logging(settings: Settings):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(settings.log_path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
@@ -441,15 +422,51 @@ def run(settings: Settings, show_window=True) -> int:
     root.setLevel(logging.INFO)
     root.addHandler(handler)
 
+
+def _make_app() -> QApplication:
+    if sys.platform == "win32":
+        # Show the app's own icon on the taskbar instead of Python's
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TeamTrialsScoreTracker")
+        except (AttributeError, OSError):
+            pass
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("Team Trials Score Tracker")
+    app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(str(ASSETS_DIR / "icon.png")))
-    app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(theme.STYLESHEET)
-    ocr.configure(settings.tesseract_cmd)
+    return app
+
+
+def run() -> int:
+    """Open the app. Returns the exit code."""
+    app = _make_app()
+    try:
+        settings = load_settings()
+    except SettingsError as e:
+        QMessageBox.critical(None, APP_NAME,
+                             f"Your settings file couldn't be read:\n\n{e}\n\n"
+                             "Fix the file (or delete it to start over), then open the app again.")
+        return 1
+    _setup_logging(settings)
+    try:
+        migrated = migrate_legacy(settings)
+        if migrated:
+            logger.info("Migrated %d matches to %s", migrated, settings.scores_path)
+    except Exception as e:  # noqa: BLE001 - shown to the user
+        logger.exception("Migrating old data failed")
+        QMessageBox.warning(None, APP_NAME, f"Your old match data couldn't be converted:\n\n{e}")
+
+    if not ocr.configure(settings.tesseract_cmd):
+        QMessageBox.warning(
+            None, APP_NAME,
+            "Tesseract OCR was not found, so screenshots can't be read yet.\n\n"
+            "Install it from https://github.com/UB-Mannheim/tesseract/wiki\n"
+            f"Expected at: {settings.tesseract_cmd}\n\n"
+            f"If it's installed elsewhere, set tesseract_cmd in\n{settings.settings_path}\n"
+            "or add its folder to your PATH, then restart the app.\n\n"
+            "You can still look at your analysis and roster.")
+
     tracker = TrackerApp(app, settings)
-    if show_window:
-        tracker.window.show_page(0 if settings.roster else 2)
-    tracker.notify("Score Tracker is running",
-                   f"Press {settings.capture_hotkey.upper()} on a Score Info screen, or use Win+Shift+S.")
+    tracker.window.show_page(0 if settings.roster else 2)
+    tracker.window.show()
     return app.exec()

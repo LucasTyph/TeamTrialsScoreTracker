@@ -1,3 +1,7 @@
-from .cli import main
+"""``python -m score_tracker`` opens the app."""
 
-main()
+import sys
+
+from .gui.app import run
+
+sys.exit(run())

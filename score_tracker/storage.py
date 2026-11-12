@@ -71,14 +71,25 @@ def load_scores(settings: Settings) -> pd.DataFrame:
     path = settings.scores_path
     if not path.is_file():
         return _empty()
-    df = pd.read_csv(path, dtype={"timestamp": "str", "character": "str", "distance": "str"})
+    with open(path, encoding="utf-8") as f:
+        header = f.readline().strip().split(",")
+    dtypes = {"timestamp": "str", "character": "str", "distance": "str"}
+    legacy_header = "distance" not in header
+    if legacy_header:
+        # Saved before distances were tracked. Rows appended later may have a
+        # distance even though the header doesn't, so read with all columns.
+        df = pd.read_csv(path, names=COLUMNS, skiprows=1, dtype=dtypes)
+    else:
+        df = pd.read_csv(path, dtype=dtypes)
     if df.empty:
         return _empty()
-    if "distance" not in df.columns:
-        # Saved before distances were tracked: assume the current teams
-        df["distance"] = df["character"].map(lambda n: settings.teams.get(n, ""))
-        if settings.teams:
-            _write(df, settings)
+    if legacy_header:
+        # Assume the current teams for the old rows, and upgrade the header
+        # so later appends stay aligned
+        missing = df["distance"].isna()
+        df.loc[missing, "distance"] = df.loc[missing, "character"].map(lambda n: settings.teams.get(n, ""))
+        df["distance"] = df["distance"].fillna("")
+        _write(df, settings)
     df["distance"] = df["distance"].fillna("")
     df["match_id"] = df["match_id"].astype("int64")
     df["score"] = df["score"].astype("int64")
