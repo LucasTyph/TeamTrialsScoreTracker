@@ -1,14 +1,15 @@
 """Settings: built-in defaults overridden by the user's settings.toml.
 
-Personal settings (your roster, a custom Tesseract path, ...) live in
+Personal settings (your teams, a custom Tesseract path, ...) live in
 ``settings.toml`` inside the data folder, which is not tracked by git.
-The file is created on first run.
+The file is created on first run and can be edited from the app.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass, field, fields, replace
@@ -20,11 +21,19 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover
     import tomli as tomllib
 
+logger = logging.getLogger(__name__)
+
 PACKAGE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = PACKAGE_DIR / "assets"
 SETTINGS_FILENAME = "settings.toml"
 SCORES_FILENAME = "scores.csv"
 LEGACY_CSV_FILENAME = "dataset.csv"
+
+DISTANCES = ("Sprint", "Mile", "Medium", "Long", "Dirt")
+TEAM_SIZE = 3
+
+# Settings from older versions that no longer do anything (ignored if present)
+_RETIRED = {"adjusted_score_k", "crop_above_bar"}
 
 
 class SettingsError(Exception):
@@ -51,15 +60,24 @@ def default_data_dir() -> Path:
 @dataclass(frozen=True)
 class Settings:
     roster: tuple[str, ...] = ()
+    # Character name -> distance ("Sprint", ...). Characters without a team
+    # are in the roster but not in this mapping.
+    teams: dict = field(default_factory=dict)
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    # Analysis: adjusted score = mean - k * std
-    adjusted_score_k: float = 0.5
+    # Weekly goal: matches you play per week, and when the week resets (UTC)
+    matches_per_week: int = 35
+    week_reset_weekday: int = 0  # 0 = Monday
+    week_reset_hour_utc: int = 0
+    # A score you're aiming for (e.g. the promotion line); 0 = none
+    target_score: int = 0
+    # Window capture
+    game_process: str = "umamusumeprettyderby.exe"
+    capture_hotkey: str = "ctrl+alt+s"
     # OCR / parsing tuning
     row_tolerance: int = 20
     fuzzy_match_threshold: float = 0.6
-    crop_above_bar: int = 55
     min_bar_width: int = 100
-    # Tray: an incomplete match is saved as partial after this many idle minutes
+    # An incomplete match is saved as partial after this many idle minutes
     pending_timeout_minutes: float = 10.0
     data_dir: Path = field(default_factory=default_data_dir)
 
@@ -77,13 +95,16 @@ class Settings:
 
     @property
     def log_path(self) -> Path:
-        return self.data_dir / "tray.log"
+        return self.data_dir / "tracker.log"
 
-    def with_roster(self, roster) -> "Settings":
-        return replace(self, roster=tuple(roster))
+    def team_members(self, distance) -> list[str]:
+        return [n for n in self.roster if self.teams.get(n) == distance]
+
+    def with_roster(self, roster, teams=None) -> "Settings":
+        return replace(self, roster=tuple(roster), teams=dict(teams or {}))
 
 
-_OVERRIDABLE = {f.name: f for f in fields(Settings) if f.name not in ("roster", "data_dir")}
+_OVERRIDABLE = [f.name for f in fields(Settings) if f.name not in ("roster", "teams", "data_dir")]
 
 
 def _legacy_roster(data_dir: Path) -> list[str]:
@@ -96,25 +117,45 @@ def _legacy_roster(data_dir: Path) -> list[str]:
     return [name for name in header if name and name != "timestamp"]
 
 
-def settings_template(roster) -> str:
+def _toml_value(value) -> str:
+    if isinstance(value, str):
+        # Literal string: no escaping needed for Windows paths
+        return f"'{value}'" if "'" not in value else json.dumps(value)
+    return repr(value)
+
+
+def _toml_list(names) -> str:
+    return "[" + ", ".join(json.dumps(n, ensure_ascii=False) for n in names) + "]"
+
+
+def settings_template(roster, teams=None, overrides=None) -> str:
+    """settings.toml content for a roster, team assignment and overrides.
+
+    TOML needs top-level keys before tables, so [teams] comes last.
+    """
+    teams = teams or {}
+    overrides = overrides or {}
     defaults = Settings(data_dir=Path("."))
     lines = [
-        "# Team Trials Score Tracker settings.",
-        "#",
-        "# roster: the exact in-game names of the 15 characters on your team.",
-        "# Changing it is safe: past matches keep their own characters.",
-        "roster = [",
-    ]
-    lines += [f"    {json.dumps(name, ensure_ascii=False)}," for name in roster]
-    lines += [
-        "]",
+        "# Team Trials Score Tracker settings (also editable on the app's Roster page).",
+        "",
+        "# Characters not assigned to a team yet",
+        f"roster = {_toml_list(n for n in roster if n not in teams)}",
         "",
         "# Uncomment a line to override its default.",
-        f"# tesseract_cmd = '{defaults.tesseract_cmd}'",
     ]
     for name in _OVERRIDABLE:
-        if name != "tesseract_cmd":
-            lines.append(f"# {name} = {getattr(defaults, name)}")
+        value = overrides.get(name, getattr(defaults, name))
+        prefix = "" if name in overrides else "# "
+        lines.append(f"{prefix}{name} = {_toml_value(value)}")
+    lines += [
+        "",
+        "# Your five teams of three, with each character's exact in-game name.",
+        "# Changing them is safe: past matches keep the team each score was earned in.",
+        "[teams]",
+    ]
+    for d in DISTANCES:
+        lines.append(f"{d} = {_toml_list(n for n in roster if teams.get(n) == d)}")
     return "\n".join(lines) + "\n"
 
 
@@ -128,6 +169,12 @@ def ensure_settings_file(data_dir: Path | None = None) -> Path:
     return path
 
 
+def _names(path, key, value) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(n, str) for n in value):
+        raise SettingsError(f"{path}: '{key}' must be a list of names")
+    return [n.strip() for n in value if n.strip()]
+
+
 def load_settings(data_dir: Path | None = None) -> Settings:
     """Read settings.toml from the data folder (creating it if needed)."""
     data_dir = data_dir or default_data_dir()
@@ -138,27 +185,52 @@ def load_settings(data_dir: Path | None = None) -> Settings:
     except tomllib.TOMLDecodeError as e:
         raise SettingsError(f"{path}: {e}") from e
 
-    values = {"data_dir": data_dir}
-    roster = raw.pop("roster", [])
-    if not isinstance(roster, list) or not all(isinstance(n, str) for n in roster):
-        raise SettingsError(f"{path}: 'roster' must be a list of names")
-    roster = [n.strip() for n in roster if n.strip()]
+    teams_raw = raw.pop("teams", {})
+    if not isinstance(teams_raw, dict):
+        raise SettingsError(f"{path}: [teams] must be a table")
+    unknown_teams = sorted(set(teams_raw) - set(DISTANCES))
+    if unknown_teams:
+        raise SettingsError(f"{path}: unknown team(s): {', '.join(unknown_teams)} "
+                            f"(use {', '.join(DISTANCES)})")
+    roster, teams = [], {}
+    for d in DISTANCES:
+        for name in _names(path, d, teams_raw.get(d, [])):
+            roster.append(name)
+            teams.setdefault(name, d)
+    roster += _names(path, "roster", raw.pop("roster", []))
     dupes = sorted({n for n in roster if roster.count(n) > 1})
     if dupes:
         raise SettingsError(f"{path}: duplicate roster names: {', '.join(dupes)}")
-    values["roster"] = tuple(roster)
 
+    values = {"data_dir": data_dir, "roster": tuple(roster), "teams": teams}
+    for key in _RETIRED & set(raw):
+        logger.info("Ignoring retired setting %r in %s", key, path)
+        raw.pop(key)
     unknown = sorted(set(raw) - set(_OVERRIDABLE))
     if unknown:
         raise SettingsError(f"{path}: unknown setting(s): {', '.join(unknown)}")
+    defaults = Settings(data_dir=data_dir)
     for key, value in raw.items():
-        expected = type(getattr(Settings(data_dir=data_dir), key))
+        expected = type(getattr(defaults, key))
         if expected is float and isinstance(value, int):
             value = float(value)
         if not isinstance(value, expected) or isinstance(value, bool):
             raise SettingsError(f"{path}: '{key}' must be of type {expected.__name__}")
         values[key] = value
     return Settings(**values)
+
+
+def save_settings(settings: Settings) -> Path:
+    """Write roster, teams and any non-default settings to settings.toml."""
+    defaults = Settings(data_dir=settings.data_dir)
+    overrides = {k: getattr(settings, k) for k in _OVERRIDABLE
+                 if getattr(settings, k) != getattr(defaults, k)}
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.settings_path
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(settings_template(settings.roster, settings.teams, overrides), encoding="utf-8")
+    tmp.replace(path)
+    return path
 
 
 @lru_cache(maxsize=1)

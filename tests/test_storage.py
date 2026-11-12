@@ -37,7 +37,7 @@ def test_roster_change_does_not_corrupt_data(settings):
     append_match({"Gamma": 32000, "Delta": 40000, "Omega": 50000}, settings)
 
     df = load_scores(settings)
-    assert set(df.columns) == {"match_id", "timestamp", "character", "score"}
+    assert set(df.columns) == {"match_id", "timestamp", "character", "score", "distance"}
     wide = to_wide(df, ["Gamma", "Delta", "Omega"])
     assert list(wide.columns) == ["timestamp", "Gamma", "Delta", "Omega"]
     assert wide.loc[3].drop("timestamp").tolist() == [32000, 40000, 50000]
@@ -52,3 +52,27 @@ def test_to_wide_drops_matches_without_roster_characters(settings):
     wide = to_wide(load_scores(settings), ["Beta"])
     assert wide.index.tolist() == [2]
     assert isinstance(wide, pd.DataFrame)
+
+
+def test_distances_are_saved_with_roster_fallback(settings):
+    from dataclasses import replace
+    s = replace(settings, teams={"Alpha": "Sprint", "Beta": "Mile"})
+    append_match({"Alpha": 10000, "Beta": 20000}, s, distances={"Beta": "Dirt"})
+    df = load_scores(s).set_index("character")
+    assert df.loc["Alpha", "distance"] == "Sprint"  # from the roster
+    assert df.loc["Beta", "distance"] == "Dirt"  # as read from the screenshot
+
+
+def test_old_files_get_a_distance_column(settings):
+    from dataclasses import replace
+    settings.scores_path.write_text("match_id,timestamp,character,score\n1,2026-01-01 10:00,Alpha,10000\n")
+    s = replace(settings, teams={"Alpha": "Long"})
+    assert load_scores(s).loc[0, "distance"] == "Long"
+
+
+def test_delete_match(settings):
+    from score_tracker.storage import delete_match
+    append_match({"Alpha": 1}, settings)
+    append_match({"Alpha": 2}, settings)
+    assert delete_match(1, settings) == 1
+    assert load_scores(settings)["match_id"].tolist() == [2]

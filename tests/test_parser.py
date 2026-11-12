@@ -1,4 +1,4 @@
-from score_tracker.parser import _part_matches, find_score, parse_scores, parse_single_match
+from score_tracker.parser import _part_matches, find_score, parse_scores, parse_single_match, read_name_text
 
 from conftest import DATASET_ROSTER, make_ocr, row
 
@@ -56,3 +56,9 @@ def test_parse_scores_full_image():
         "Curren Chan": 60016,
         "King Halo": 41778,
     }
+
+
+def test_read_name_text_without_roster():
+    words = row("CY", "Agnes", "Tachyon", "87,777", "pts", "@")
+    assert read_name_text(make_ocr(words), 20) == "CY Agnes Tachyon"
+    assert read_name_text(make_ocr(row("Agnes")), 20) is None  # no score on the line

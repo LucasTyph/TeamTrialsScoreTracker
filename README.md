@@ -1,50 +1,61 @@
 # Team Trials Score Tracker
 
-A tool for extracting, tracking, and analyzing Team Trials scores from Umamusume: Pretty Derby screenshots. Automatically process match data to identify underperforming characters and optimize your team composition.
+A desktop app that reads your Team Trials results in Umamusume: Pretty Derby and tells you what to change to raise your **weekly top score**, the single best match that decides your class each week.
 
-## Overview
-
-Looking at a character's best score alone isn't enough to gauge their performance in Team Trials. Consistency matters — tracking scores across multiple matches helps identify which characters reliably underperform and should be replaced. 
-
-This tool provides:
-
-- **Automated extraction** — Reads screenshots directly from the clipboard
-- **OCR-powered parsing** — Extracts character names and scores from Team Trials result screens
-- **Persistent storage** — Saves match data to CSV for long-term tracking
-- **Statistical analysis** — Evaluates performance with consistency metrics to identify weak links
+- **Two key presses per match.** On a race's Score Info screen, press the capture hotkey at the top of the list and again at the bottom. The app captures the game window directly (no snipping), reads all 15 names, scores and distances, and saves the match.
+- **Easy fixes when OCR misses.** Any row it can't read shows up with its picture, so you can confirm who it is in one click. A single unread row per team is filled in automatically.
+- **Your five teams.** Set up Sprint, Mile, Medium, Long and Dirt (or fill them from a screenshot). Each saved score remembers the team it was earned in.
+- **Analysis built for the weekly best.** How likely you are to beat this week's best, your projected weekly best, and which racer in each team is holding it back.
 
 ## Requirements
 
+- Windows, with the game running in its own window
 - [Python 3.10+](https://www.python.org/downloads/)
-- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) — Install via UB-Mannheim releases
+- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki), installed via the UB-Mannheim releases or `winget install UB-Mannheim.TesseractOCR`
   - Default path: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-  - If installed in a different location, set `tesseract_cmd` in your `settings.toml`, or make sure `tesseract` is available on your `PATH`
+  - Elsewhere? Set `tesseract_cmd` in `settings.toml`, or put `tesseract` on your `PATH`
 
 ## Installation
-
-### Running from a checkout
 
 ```bash
 pip install -r requirements.txt
 ```
 
-You can also install Tesseract itself with winget:
+Or install it as a command with `pip install .`, which adds `score-tracker` (same options as `python -m score_tracker`).
 
-```powershell
-winget install UB-Mannheim.TesseractOCR
-```
-
-### Installing as a command
+## Getting started
 
 ```bash
-pip install .
+python -m score_tracker --app
 ```
 
-This adds a `score-tracker` command (same options as `python -m score_tracker`).
+Or double-click `scripts/start_tray.bat`. The app opens a window and puts its icon in the system tray. Closing the window keeps it running in the tray; use the tray menu's **Exit** to quit. Use `--tray` to start without the window.
 
-## Configuration
+1. **Roster.** Type your 15 racers into the five teams (names autocomplete), or open a race's Score Info in the game and click **Fill from game screen**: it reads the names and each one's distance badge. Do it once at the top of the list and once at the bottom, check the names, then **Save**.
+2. **Capture a match.** In the game, open the race's **Score Info** and press the capture hotkey (`Ctrl+Alt+S` by default). Drag the list to the bottom and press it again. The match saves itself once all 15 are found. `Win+Shift+S` snips still work too: the app watches the clipboard.
+3. **Fix what OCR missed.** If a row couldn't be read, the **Current match** page shows its picture with the most likely missing name preselected. Click **Assign**, or type a missing score straight into its slot.
+4. **Analysis.** Open the **Analysis** page any time.
 
-Your personal settings live in `settings.toml` in the data folder, which is not tracked by git. It is created the first time you run the app:
+The hotkey works from anywhere and captures the game window even when it's behind other windows. It never captures the rest of your screen.
+
+## The analysis
+
+Your class each week is decided by your **best** match, not your average, so the analysis is built around peaks:
+
+- **Projected weekly best.** If your match totals average μ with spread σ, the best of *n* matches lands around μ + c(n)·σ, where c(35) ≈ 2.1. Spread helps here: with 35 tries, one great match is worth more than a steady average.
+- **Chance to beat this week's best** (or your target score) in the matches you have left.
+- **Each racer's share** of the projected weekly best: their average plus a bonus for scoring high in your best matches (μᵢ + c·cov(xᵢ, total)/σ). The shares add up to the projected weekly best.
+- **Upgrade target.** The weakest share in each team is where a better racer raises your weekly best the most.
+- **In top matches.** How much more (or less) a racer scores in your best 20% of matches compared with their average. Racers who dip when you peak hold your weekly best back.
+
+Notes:
+- Match totals are the sum of the 15 racers' scores. The game's own total also adds team bonuses, so it's a little higher; since that difference is consistent, comparisons aren't affected.
+- Only complete matches (all 15 racers) count toward weekly bests and the model. Partial matches still count toward each racer's history.
+- Times are shown in UTC to match the game. Set when your week resets on the Roster page.
+
+## Settings
+
+Your settings live in `settings.toml` in the data folder (not tracked by git). Most can be changed in the app; all can be edited by hand:
 
 | Running from | Data folder |
 | --- | --- |
@@ -52,153 +63,68 @@ Your personal settings live in `settings.toml` in the data folder, which is not 
 | `pip install .` | `%LOCALAPPDATA%\TeamTrialsScoreTracker` |
 | Anywhere, with `SCORE_TRACKER_DATA` set | that folder |
 
-Add your 15 character names exactly as they appear in-game:
-
-```toml
-roster = [
-    "Maruzensky",
-    "Oguri Cap",
-    # ... your 15 character names
-]
-```
-
-Changing the roster later is safe: each saved score records its character, so old matches are never misaligned. The analysis covers the characters in your current roster.
-
-Other settings can be overridden in the same file (they are listed, commented out, in the generated file):
-
 | Setting | Default | Description |
 | --- | --- | --- |
+| `[teams]` | — | `Sprint`, `Mile`, `Medium`, `Long`, `Dirt`: three names each |
+| `roster` | `[]` | Characters not on a team (kept for old matches) |
+| `matches_per_week` | 35 | How many matches you play per week |
+| `week_reset_weekday`, `week_reset_hour_utc` | 0, 0 | When the Team Trials week resets (0 = Monday) |
+| `target_score` | 0 | A score you're aiming for, shown in the analysis |
+| `capture_hotkey` | `ctrl+alt+s` | Global capture hotkey (`ctrl`, `alt`, `shift`, `win` + a letter, digit or `F1`–`F24`) |
+| `game_process` | `umamusumeprettyderby.exe` | The game's process, for window capture |
 | `tesseract_cmd` | `C:\Program Files\Tesseract-OCR\tesseract.exe` | Path to `tesseract.exe` |
-| `row_tolerance` | 20 | Vertical pixel tolerance for grouping OCR entries |
-| `fuzzy_match_threshold` | 0.6 | Minimum fraction of a name's words that must be read |
-| `crop_above_bar` | 55 | Pixels to crop above each detected green progress bar |
-| `min_bar_width` | 100 | Minimum width in pixels of a green bar |
-| `adjusted_score_k` | 0.5 | Variance penalty multiplier for consistency scoring |
-| `pending_timeout_minutes` | 10 | Tray app: save an incomplete match as partial after this long without new screenshots |
+| `pending_timeout_minutes` | 10 | Save an incomplete match as partial after this long without new screenshots |
+| `row_tolerance`, `fuzzy_match_threshold`, `min_bar_width` | 20, 0.6, 100 | OCR tuning |
 
-## Usage
+## Command line
 
-### Background Tray App (Recommended)
+| Command | What it does |
+| --- | --- |
+| `python -m score_tracker --app` | Open the app |
+| `python -m score_tracker --tray` | Start the app in the tray, without the window |
+| `python -m score_tracker` | Record a match in the terminal from two clipboard screenshots |
+| `python -m score_tracker --analyze` | Print the analysis |
+| `python -m score_tracker --debug` | Show what OCR reads from the clipboard image |
 
-```bash
-python -m score_tracker --tray
-```
+## How it works
 
-Or double-click `scripts/start_tray.bat`. (`python main.py --tray` also still works.)
+1. **Find the rows.** Each character row on Score Info has a green progress bar. The app finds the longest green run on each line of pixels, groups them into bars, and keeps the set of thin bars that share a left edge. That works on a tight snip or on the whole game window, skipping headers and other green UI. Rows are evenly spaced, so it also looks one row below the last bar, where a row's name can be visible even though its bar is scrolled out of view.
+2. **Crop around each bar.** The name and score sit above the bar; the distance badge sits under the portrait to its left.
+3. **Read.** Tesseract reads each crop in grayscale first, then in colour, then enlarged 3×, until a name and score are found. The badge's white text is isolated from the pill before reading.
+4. **Match names.** OCR words are matched to your roster, trying the row's team first. Rows already recorded (from the other screenshot) are recognised as duplicates instead of being matched to a similar name.
+5. **Fill gaps.** If one character is missing from a team and one unread row from that team has a score, they belong together.
 
-The application runs in the system tray and will:
+## Data storage
 
-1. Monitor the clipboard for new screenshots
-2. Automatically process screenshots taken with `Win+Shift+S`
-3. Show a notification with how many characters were found so far
-4. Save the match once all 15 characters are found
-5. Show a summary notification with the total team score
-
-Screenshots that overlap, or the same screen captured twice, are handled: characters already recorded are recognized and skipped. If you take a screenshot of the *next* match before the current one is complete, the incomplete match is saved as a partial match and a new one starts. The same happens after `pending_timeout_minutes` without new screenshots, and when you exit.
-
-If exactly one character's name can't be read but its score can, and that character is the only one missing, the score is assigned to it by elimination (the notification says so).
-
-**Tray menu options:**
-
-- **Analyze** — View a full performance report
-- **View Last Match** — Display the most recently recorded match
-- **Save Partial Match** — Save the characters found so far as an incomplete match
-- **Discard Pending Match** — Throw away the characters found so far
-- **Pause Monitoring** — Temporarily disable clipboard detection
-- **Exit** — Close the application
-
-### Command-Line Recording
-
-```bash
-python -m score_tracker
-```
-
-Prompts for two sequential screenshots. Useful for debugging or when the tray app isn't needed.
-
-### Analysis
-
-```bash
-python -m score_tracker --analyze
-```
-
-Generates a comprehensive performance report in the console, including:
-
-- Team totals (average, best, and worst), from complete matches only so partial matches don't skew them
-- Recent match trends
-- Character tier classifications (S/A/B/C)
-- Contribution percentages
-- Coefficient of variation (consistency)
-- Replace priority rankings
-- Detailed statistics table
-
-### Debug Mode
-
-```bash
-python -m score_tracker --debug
-```
-
-Runs OCR on the current clipboard image and shows, for each green bar, the words and numbers detected with each preprocessing pass and the candidate name matches.
-
-## How It Works
-
-### Screenshot Processing
-
-1. **Green bar detection** — Scans the image for bright green progress bars (G channel dominant over R and B)
-2. **Region cropping** — For each bar, crops the area above it where the character name and score appear
-3. **Per-crop OCR** — Runs Tesseract on each small crop individually, avoiding cross-row confusion. Each crop is tried in grayscale first, then in color, then grayscale upscaled 3×, until a name and score are read (grayscale alone reads all 30 rows in the test screenshots; color misses one)
-4. **Name matching** — Matches OCR words to character names using part-fraction scoring (what fraction of the name's word-parts appear in the crop)
-5. **Score extraction** — Finds the number in the crop, handling OCR splits (e.g., "64,636" read as "6" + "4,636")
-
-### Number Merging
-
-Scores are always between 10,000 and 200,000. When OCR splits a number:
-- Adjacent fragments on the same row are merged
-- The merge direction is determined by the position of extracted fragments
-- Results outside the valid range are discarded as UI noise
-
-### Data Storage
-
-Matches are stored in `scores.csv` in the data folder, one row per character score:
+Scores are stored in `scores.csv`, one row per character score:
 
 ```text
-match_id,timestamp,character,score
-1,2026-11-02 22:33:00,Agnes Digital,65582
+match_id,timestamp,character,score,distance
+1,2026-11-02 22:33:00,Agnes Digital,65582,Dirt
 ```
 
-Data from older versions (`dataset.csv`, one column per character) is converted automatically on first run; the original is kept as `dataset.wide-backup.csv`.
+`distance` is the team the character raced in for that match, from the screenshot's badge or your roster. Older files are upgraded automatically.
 
-### Statistical Analysis
-
-| Metric | Formula | Purpose |
-| --- | --- | --- |
-| **Adjusted Score** | `mean - k * std` | Rewards consistency; higher values are better |
-| **Contribution %** | `char_mean / total_mean × 100` | Percentage of total team score contributed by each character (complete matches) |
-| **CV (Coefficient of Variation)** | `std / mean × 100` | Measures reliability relative to average performance (lower is better) |
-| **Replace Priority** | Weighted composite (low contribution, high CV, low adjusted score) | Ranked list of replacement candidates from worst to best |
-
-## Project Structure
+## Project structure
 
 ```text
 ├── score_tracker/
-│   ├── cli.py                # Command-line entry point (python -m score_tracker)
-│   ├── config.py             # Default settings and settings.toml loading
-│   ├── pipeline.py           # Screenshot → scores (shared by CLI, tray and tests)
-│   ├── ocr.py                # Tesseract setup, green-bar detection, preprocessing
-│   ├── parser.py             # Name matching, score parsing and number merging
-│   ├── storage.py            # scores.csv read/write and legacy migration
-│   ├── analysis.py           # Statistical analysis and report generation
-│   ├── clipboard_monitor.py  # Background clipboard watcher
-│   ├── tray_app.py           # System tray application
-│   ├── notifications.py      # Desktop notifications
-│   └── assets/icon.png       # Tray icon
+│   ├── gui/                  # PySide6 app: window, pages, theme, tray icon
+│   ├── cli.py                # Command-line entry point
+│   ├── capture.py            # Capture the game window (Windows)
+│   ├── pipeline.py           # Screenshot → rows → match (shared by app, CLI and tests)
+│   ├── session.py            # Assembles screenshots into matches
+│   ├── ocr.py                # Row detection, crops, preprocessing, distance badges
+│   ├── parser.py             # Name matching and score parsing
+│   ├── analysis.py           # Weekly-top-score analysis
+│   ├── storage.py            # scores.csv
+│   ├── config.py             # Settings and settings.toml
+│   ├── characters.py         # Known names for autocomplete
+│   └── assets/icon.png       # App and tray icon
 ├── main.py                   # Shortcut for python -m score_tracker
-├── scripts/
-│   └── start_tray.bat        # Windows launcher script
-├── data/                     # settings.toml, scores.csv, tray.log (gitignored)
-├── tests/                    # pytest suite, test screenshots and expected scores
-├── requirements.txt          # Python dependencies
-├── pyproject.toml            # Project metadata and dependencies
-└── LICENSE                   # MIT License
+├── scripts/start_tray.bat    # Windows launcher
+├── data/                     # Your settings and scores (gitignored)
+└── tests/                    # pytest suite with real screenshots
 ```
 
 ## Testing
@@ -208,18 +134,17 @@ pip install pytest
 python -m pytest
 ```
 
-Most tests use synthetic OCR data and run anywhere. `tests/test_screenshots.py` runs the real screenshots in `tests/` through Tesseract and checks every score against `tests/dataset.csv`; it is skipped when Tesseract isn't installed (as in CI). The tests use their own roster, so they don't depend on your `settings.toml`.
+Most tests use synthetic OCR data and run anywhere. `tests/test_screenshots.py` runs real screenshots through Tesseract: snips of two matches (`print1-4.png`) and full game-window captures of a third (`window1-2.png`). It's skipped where Tesseract isn't installed (as in CI).
 
 ## Troubleshooting
 
 | Issue | Solution |
 | --- | --- |
-| **`Tesseract OCR was not found`** | Install Tesseract (see [Requirements](#requirements)) and make sure `tesseract_cmd` in `settings.toml` points to `tesseract.exe`, or add its install folder to your `PATH`. |
-| **`Your roster is empty`** | Add your character names to `settings.toml` (the error shows its path). |
-| **No green bars detected** | Ensure your screenshot captures the character score area with visible green progress bars. Adjust `crop_above_bar` in `settings.toml` if needed. |
-| **Character names not matching** | Verify that the roster names exactly match the in-game names. Use `--debug` to inspect detected text. Lower `fuzzy_match_threshold` only with care: similar names (e.g. "Sakura Chiyono O" / "Sakura Bakushin O") can then be confused. |
-| **Incorrect or missing scores** | Use `--debug` to view detected numbers and merge candidates. Scores must fall within 10,000–200,000 (`SCORE_MIN`/`SCORE_MAX` in `score_tracker/parser.py`). |
-| **Tray app not responding** | Check `data/tray.log` for errors, ensure no other process is holding the clipboard, and restart the application. |
+| **`Tesseract OCR was not found`** | Install Tesseract (see [Requirements](#requirements)) and check `tesseract_cmd`. |
+| **"Couldn't capture the game"** | Make sure the game is running and not minimized. If it runs under a different process name, set it on the Roster page. |
+| **"Hotkey unavailable"** | Another program uses that key combination. Pick another on the Roster page. |
+| **A name keeps failing** | Check the spelling on the Roster page matches the game exactly. Use `--debug` to see what OCR reads. |
+| **Something else** | Check `data/tracker.log`. |
 
 ## License
 

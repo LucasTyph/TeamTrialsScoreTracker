@@ -1,206 +1,282 @@
-"""Statistical analysis of character performance."""
+"""Analysis aimed at one goal: the highest single match total each week.
 
+Your class each week is decided by your best match, so what matters is not
+how steady a team is but how high it can peak in ~35 attempts:
+
+- If a match total T has mean μ and spread σ, the best of n matches is
+  expected to land around μ + c(n)·σ, where c(n) is the expected maximum of
+  n standard normal draws (c(35) ≈ 2.1). Spread is good here.
+- Each character's share of that projected best is
+  μᵢ + c(n)·cov(xᵢ, T)/σ, which sums exactly to μ + c(n)·σ. A character who
+  scores big in your big matches counts for more than their average alone.
+- The weakest share in a team is where an upgrade raises your weekly best
+  the most.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
 import pandas as pd
 
-from .storage import to_wide
+from .config import DISTANCES, Settings
+
+# How many recent complete matches the model learns from
+MODEL_WINDOW = 60
+# Fewer complete matches than this and estimates are flagged as rough
+MIN_MATCHES = 8
 
 
-def compute_statistics(df):
-    """Compute per-character statistics from match data."""
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    stats = []
-    for col in score_cols:
-        s = df[col].dropna()
-        if len(s) > 0:
-            stats.append(
-                {
-                    "character": col,
-                    "mean": s.mean(),
-                    "median": s.median(),
-                    "std": s.std(),
-                    "min": s.min(),
-                    "max": s.max(),
-                    "p75": s.quantile(0.75),
-                    "matches": len(s),
-                }
-            )
-    return pd.DataFrame(stats).set_index("character")
+def expected_max_z(n: int) -> float:
+    """E[max of n iid standard normals]."""
+    if n <= 1:
+        return 0.0
+    x = np.linspace(-8, 8, 4001)
+    pdf = np.exp(-x * x / 2) / math.sqrt(2 * math.pi)
+    cdf = 0.5 * (1 + np.vectorize(math.erf)(x / math.sqrt(2)))
+    return float(np.trapezoid(x * n * pdf * cdf ** (n - 1), x)) if hasattr(np, "trapezoid") \
+        else float(np.trapz(x * n * pdf * cdf ** (n - 1), x))
 
 
-def average_rank(df):
-    """Compute average rank per character across all matches."""
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    return df[score_cols].rank(axis=1, ascending=False, method="average").mean()
+def _norm_cdf(z: float) -> float:
+    return 0.5 * (1 + math.erf(z / math.sqrt(2)))
 
 
-def consistency_adjusted_score(stats_df, k=0.5):
-    """adjusted = mean - k * std. Higher is better."""
-    return stats_df["mean"] - k * stats_df["std"].fillna(0)
+def prob_at_least_one_above(target, mu, sigma, n) -> float:
+    """P(max of n matches > target) under a normal model of match totals."""
+    if n <= 0:
+        return 0.0
+    if sigma <= 0:
+        return 1.0 if mu > target else 0.0
+    return 1 - _norm_cdf((target - mu) / sigma) ** n
 
 
-def complete_matches(df):
-    """Only matches where every roster character has a score."""
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    return df.dropna(subset=score_cols)
+def week_start(ts_utc: datetime, settings: Settings) -> datetime:
+    """Start (UTC) of the Team Trials week containing ts_utc."""
+    day = ts_utc.replace(hour=settings.week_reset_hour_utc, minute=0, second=0, microsecond=0)
+    day -= timedelta(days=(day.weekday() - settings.week_reset_weekday) % 7)
+    if day > ts_utc:
+        day -= timedelta(days=7)
+    return day
 
 
-def contribution_pct(df, stats_df):
-    """Each character's avg score as % of avg total match score.
-
-    Uses complete matches only, so a missing character can't inflate
-    everyone else's share. NaN when there are no complete matches.
-    """
-    complete = complete_matches(df)
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    if complete.empty:
-        return pd.Series(float("nan"), index=stats_df.index)
-    avg_total = complete[score_cols].sum(axis=1).mean()
-    return (stats_df["mean"] / avg_total * 100).round(1)
+def _to_utc(timestamps: pd.Series) -> pd.Series:
+    """Saved local timestamps → UTC."""
+    local = pd.to_datetime(timestamps, errors="coerce", format="mixed")
+    tz = datetime.now().astimezone().tzinfo
+    return local.dt.tz_localize(tz, ambiguous="NaT", nonexistent="shift_forward").dt.tz_convert("UTC")
 
 
-def coefficient_of_variation(stats_df):
-    """std / mean. Lower = more consistent."""
-    cv = (stats_df["std"] / stats_df["mean"] * 100).fillna(0).round(1)
-    return cv
+@dataclass
+class Match:
+    match_id: int
+    played_at: datetime  # UTC
+    total: int
+    characters: int
+    complete: bool
 
 
-def assign_tier(stats_df):
-    """Assign S/A/B/C tiers based on adjusted score percentiles."""
-    adjusted = stats_df["adjusted"]
-    p25 = adjusted.quantile(0.25)
-    p50 = adjusted.quantile(0.50)
-    p75 = adjusted.quantile(0.75)
-
-    def tier(val):
-        if val >= p75:
-            return "S"
-        elif val >= p50:
-            return "A"
-        elif val >= p25:
-            return "B"
-        else:
-            return "C"
-
-    return adjusted.apply(tier)
+@dataclass
+class CharacterStats:
+    name: str
+    distance: str
+    matches: int
+    mean: float
+    best: int
+    p90: float
+    std: float
+    contribution: float  # share of the projected weekly best
+    top_lift: float  # how much more they score in your best matches
+    recent: list = field(default_factory=list)  # (played_at, score), oldest first
 
 
-def replace_priority(stats_df, df):
-    """Composite score for replacement priority. Higher = worse character.
-
-    Combines:
-    - Low contribution % (bad)
-    - High CV (inconsistent)
-    - Low adjusted score (bad)
-    """
-    contrib = contribution_pct(df, stats_df).fillna(0)
-    cv = coefficient_of_variation(stats_df)
-    adjusted = stats_df["adjusted"]
-
-    # Normalize each factor to 0-100 scale (higher = worse)
-    contrib_score = 100 - (contrib - contrib.min()) / (contrib.max() - contrib.min() + 1e-9) * 100
-    cv_score = (cv - cv.min()) / (cv.max() - cv.min() + 1e-9) * 100
-    adj_score = 100 - (adjusted - adjusted.min()) / (adjusted.max() - adjusted.min() + 1e-9) * 100
-
-    # Weighted composite
-    priority = 0.3 * contrib_score + 0.3 * cv_score + 0.4 * adj_score
-    return priority.round(1)
+@dataclass
+class TeamStats:
+    distance: str
+    members: list  # CharacterStats, best contribution first
+    mean_total: float
+    contribution: float
+    weakest: CharacterStats | None
+    gap_to_best: float  # weakest member's share vs. the team's best member
 
 
-def team_trend(df, window=5):
-    """Rolling average of total match scores (complete matches only)."""
-    df = complete_matches(df)
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    totals = df[score_cols].sum(axis=1)
-    rolling = totals.rolling(window=window, min_periods=1).mean()
-    return rolling
+@dataclass
+class Report:
+    settings: Settings
+    matches: list  # Match, oldest first
+    model_matches: int
+    mean_total: float
+    std_total: float
+    c: float  # expected-max factor for matches_per_week
+    projected_best: float
+    week_start: datetime
+    week_end: datetime
+    week_matches: int
+    week_best: int | None
+    week_best_match: Match | None
+    previous_week_best: int | None
+    weekly_bests: list  # (week_start, best, matches)
+    characters: list  # CharacterStats, best contribution first
+    teams: list  # TeamStats in DISTANCES order
+    top_matches: list  # Match, best first
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.settings.matches_per_week - self.week_matches)
+
+    @property
+    def rough(self) -> bool:
+        return self.model_matches < MIN_MATCHES
+
+    def p_beat(self, target, n=None) -> float:
+        n = self.remaining if n is None else n
+        return prob_at_least_one_above(target, self.mean_total, self.std_total, n)
+
+    @property
+    def p_beat_week_best(self) -> float | None:
+        if self.week_best is None:
+            return None
+        return self.p_beat(self.week_best)
 
 
-def full_analysis(df, k=0.5):
-    """Run full analysis and return combined results."""
+def build_report(scores: pd.DataFrame, settings: Settings, now: datetime | None = None) -> Report | None:
+    """Everything the analysis window and CLI show. None without data."""
+    if scores.empty:
+        return None
+    now = now or datetime.now(timezone.utc)
+    df = scores.copy()
+    df["played_at"] = _to_utc(df["timestamp"])
+    df = df.dropna(subset=["played_at"])
     if df.empty:
-        return pd.DataFrame()
+        return None
 
-    stats = compute_statistics(df)
-    stats["avg_rank"] = average_rank(df)
-    stats["adjusted"] = consistency_adjusted_score(stats, k)
-    stats["contribution_%"] = contribution_pct(df, stats)
-    stats["cv"] = coefficient_of_variation(stats)
-    stats["tier"] = assign_tier(stats)
-    stats["replace_priority"] = replace_priority(stats, df)
-    stats = stats.sort_values("adjusted", ascending=False)
-    return stats
+    roster = list(settings.roster) or sorted(df["character"].unique())
+    full_size = len(roster)
+    per_match = df.groupby("match_id").agg(total=("score", "sum"), n=("score", "size"),
+                                           played_at=("played_at", "first"))
+    per_match = per_match.sort_values("played_at")
+    matches = [Match(int(i), r.played_at.to_pydatetime(), int(r.total), int(r.n), int(r.n) >= full_size)
+               for i, r in per_match.iterrows()]
+
+    # Weekly bests (complete matches only: partial totals aren't comparable)
+    complete_ids = [m.match_id for m in matches if m.complete]
+    weeks = {}
+    for m in matches:
+        if not m.complete:
+            continue
+        ws = week_start(m.played_at, settings)
+        best, count, bm = weeks.get(ws, (0, 0, None))
+        weeks[ws] = (max(best, m.total), count + 1, m if m.total > best else bm)
+    this_week = week_start(now, settings)
+    played_this_week = sum(1 for m in matches if week_start(m.played_at, settings) == this_week)
+    wb = weeks.get(this_week)
+    prev = weeks.get(this_week - timedelta(days=7))
+
+    # Model: recent complete matches
+    model_ids = complete_ids[-MODEL_WINDOW:]
+    wide = df[df["match_id"].isin(model_ids)].pivot_table(
+        index="match_id", columns="character", values="score", aggfunc="last")
+    wide = wide.reindex(columns=[c for c in roster if c in wide.columns])
+    totals = wide.sum(axis=1)
+    mu = float(totals.mean()) if len(totals) else 0.0
+    sigma = float(totals.std(ddof=1)) if len(totals) > 1 else 0.0
+    c = expected_max_z(settings.matches_per_week)
+
+    top_cut = totals.quantile(0.8) if len(totals) >= 5 else (totals.max() if len(totals) else 0)
+    top_ids = totals[totals >= top_cut].index
+    latest_distance = (df.sort_values("played_at").groupby("character")["distance"].last())
+
+    characters = []
+    for name in wide.columns:
+        x = wide[name]
+        cov = float(np.cov(x, totals, ddof=1)[0, 1]) if len(x) > 1 else 0.0
+        hist = df[df["character"] == name].sort_values("played_at")
+        all_scores = hist["score"]
+        distance = settings.teams.get(name) or (latest_distance.get(name) or "")
+        characters.append(CharacterStats(
+            name=name,
+            distance=distance,
+            matches=int(all_scores.size),
+            mean=float(x.mean()),
+            best=int(all_scores.max()),
+            p90=float(x.quantile(0.9)),
+            std=float(x.std(ddof=1)) if len(x) > 1 else 0.0,
+            contribution=float(x.mean() + (c * cov / sigma if sigma > 0 else 0.0)),
+            top_lift=float(x.loc[top_ids].mean() - x.mean()) if len(top_ids) else 0.0,
+            recent=[(t.to_pydatetime(), int(s)) for t, s in zip(hist["played_at"], hist["score"])],
+        ))
+    characters.sort(key=lambda s: s.contribution, reverse=True)
+
+    teams = []
+    for d in (*DISTANCES, ""):
+        members = [s for s in characters if s.distance == d]
+        if not members:
+            continue
+        weakest = min(members, key=lambda s: s.contribution)
+        best = max(members, key=lambda s: s.contribution)
+        teams.append(TeamStats(
+            distance=d,
+            members=members,
+            mean_total=sum(s.mean for s in members),
+            contribution=sum(s.contribution for s in members),
+            weakest=weakest,
+            gap_to_best=best.contribution - weakest.contribution,
+        ))
+
+    by_id = {m.match_id: m for m in matches}
+    return Report(
+        settings=settings,
+        matches=matches,
+        model_matches=len(totals),
+        mean_total=mu,
+        std_total=sigma,
+        c=c,
+        projected_best=mu + c * sigma,
+        week_start=this_week,
+        week_end=this_week + timedelta(days=7),
+        week_matches=played_this_week,
+        week_best=wb[0] if wb else None,
+        week_best_match=wb[2] if wb else None,
+        previous_week_best=prev[0] if prev else None,
+        weekly_bests=sorted((ws, b, n) for ws, (b, n, _) in weeks.items()),
+        characters=characters,
+        teams=teams,
+        top_matches=sorted((by_id[i] for i in complete_ids), key=lambda m: m.total, reverse=True)[:5],
+    )
 
 
-def format_report(scores, roster, k=0.5):
-    """Human-readable analysis of the current roster.
-
-    ``scores`` is the long-format data from storage.load_scores().
-    """
-    df = to_wide(scores, roster)
-    df = df.drop(columns=[c for c in roster if df[c].isna().all()])
-    if df.empty:
-        return "No match data found for the current roster."
-
-    results = full_analysis(df, k)
-    lines = []
-
-    complete = complete_matches(df)
-    lines.append("=" * 70)
-    lines.append(f"CHARACTER PERFORMANCE REPORT ({len(df)} matches, {len(complete)} complete)")
-    lines.append("=" * 70)
+def format_report(scores: pd.DataFrame, settings: Settings, now=None) -> str:
+    """Plain-text version of the analysis (for the command line)."""
+    r = build_report(scores, settings, now)
+    if r is None:
+        return "No match data found."
+    lines = ["=" * 72, "WEEKLY TOP SCORE REPORT", "=" * 72]
+    if r.rough:
+        lines.append(f"(Only {r.model_matches} complete matches so far: estimates are rough.)")
+    lines.append(f"This week: {r.week_matches}/{r.settings.matches_per_week} matches played, "
+                 f"best {r.week_best:,}" if r.week_best else
+                 f"This week: {r.week_matches}/{r.settings.matches_per_week} matches played, no complete match yet")
+    if r.previous_week_best:
+        lines.append(f"Last week's best: {r.previous_week_best:,}")
+    lines.append(f"Typical match: {r.mean_total:,.0f} ± {r.std_total:,.0f}")
+    lines.append(f"Projected best of {r.settings.matches_per_week} matches: {r.projected_best:,.0f}")
+    if r.week_best and r.remaining:
+        lines.append(f"Chance to beat this week's best in the {r.remaining} matches left: "
+                     f"{r.p_beat_week_best:.0%}")
     lines.append("")
-
-    # Team summary (complete matches only)
-    score_cols = [c for c in df.columns if c != "timestamp"]
-    if complete.empty:
-        lines.append("Team totals: no complete matches yet.")
-    else:
-        totals = complete[score_cols].sum(axis=1)
-        lines.append(f"Team avg total: {totals.mean():,.0f}  |  Best match: {totals.max():,.0f}  |  Worst: {totals.min():,.0f}")
-
-    trend = team_trend(df, window=5)
-    if len(trend) >= 2:
-        diff = trend.iloc[-1] - trend.iloc[0]
-        if diff > 0:
-            direction = "[UP]"
-        elif diff < 0:
-            direction = "[DOWN]"
-        else:
-            direction = "[FLAT]"
-        lines.append(f"Team trend (last {min(5, len(trend))} complete matches): {direction} {diff:+,.0f}")
+    lines.append("Share of projected weekly best, by team (weakest member flagged):")
+    for t in r.teams:
+        lines.append(f"  {t.distance or 'No team':7s} {t.contribution:>9,.0f}")
+        for s in t.members:
+            flag = "  <- upgrade target" if s is t.weakest and len(t.members) > 1 else ""
+            lines.append(f"    {s.name:20s} share {s.contribution:>8,.0f}  avg {s.mean:>8,.0f}  "
+                         f"best {s.best:>8,}  in top matches {s.top_lift:+,.0f}{flag}")
     lines.append("")
-
-    # Tier summary
-    tiers = results.groupby("tier").size()
-    tier_str = ", ".join(f"{t}: {c}" for t, c in tiers.items())
-    lines.append(f"Tiers: {tier_str}")
-    lines.append("")
-
-    # Top performers
-    lines.append("--- Top Performers (keep these) ---")
-    top = results.head(5)
-    for name, row in top.iterrows():
-        lines.append(
-            f"  {name:20s}  {row['mean']:>8,.0f} avg  |  {row['tier']}  |  {row['contribution_%']:5.1f}% of total  |  CV: {row['cv']:.1f}%"
-        )
-    lines.append("")
-
-    # Replace candidates
-    lines.append("--- Replace Candidates (consider swapping) ---")
-    worst = results.tail(5).sort_values("replace_priority", ascending=False)
-    for name, row in worst.iterrows():
-        warn = " [HIGH VAR]" if row["cv"] > 15 else ""
-        lines.append(
-            f"  {name:20s}  {row['mean']:>8,.0f} avg  |  {row['tier']}  |  {row['contribution_%']:5.1f}% of total  |  CV: {row['cv']:.1f}%{warn}"
-        )
-    lines.append("")
-
-    # Full table
-    lines.append("--- Full Statistics ---")
-    col_order = ["adjusted", "avg_rank", "mean", "median", "std", "p75", "min", "max", "contribution_%", "cv", "tier", "replace_priority", "matches"]
-    available = [c for c in col_order if c in results.columns]
-    lines.append(results[available].to_string())
-    lines.append("")
-    lines.append("=" * 70)
-
+    lines.append("Your best matches:")
+    for m in r.top_matches:
+        lines.append(f"  {m.played_at:%Y-%m-%d %H:%M} UTC  {m.total:,}")
+    lines.append("=" * 72)
     return "\n".join(lines)

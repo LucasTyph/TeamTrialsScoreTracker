@@ -1,10 +1,14 @@
 """Match data persistence: one row per (match, character) score.
 
-scores.csv columns: match_id, timestamp, character, score
+scores.csv columns: match_id, timestamp, character, score, distance
 
 This long format means roster changes and partial matches never add empty
-columns or misalign old data. Data from the old one-column-per-character
-``dataset.csv`` is migrated automatically and the old file kept as a backup.
+columns or misalign old data. ``distance`` is the team the character raced
+in for that match (read from the screenshot, or from the roster), so moving a
+character between teams later doesn't rewrite history.
+
+Data from the old one-column-per-character ``dataset.csv`` is migrated
+automatically and the old file kept as a backup.
 """
 
 from __future__ import annotations
@@ -18,13 +22,16 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ["match_id", "timestamp", "character", "score"]
+COLUMNS = ["match_id", "timestamp", "character", "score", "distance"]
 LEGACY_BACKUP_SUFFIX = ".wide-backup.csv"
 
 
 def _empty() -> pd.DataFrame:
-    return pd.DataFrame({"match_id": pd.Series(dtype="int64"), "timestamp": pd.Series(dtype="str"),
-                         "character": pd.Series(dtype="str"), "score": pd.Series(dtype="int64")})
+    return pd.DataFrame({
+        "match_id": pd.Series(dtype="int64"), "timestamp": pd.Series(dtype="str"),
+        "character": pd.Series(dtype="str"), "score": pd.Series(dtype="int64"),
+        "distance": pd.Series(dtype="str"),
+    })
 
 
 def migrate_legacy(settings: Settings) -> int:
@@ -40,6 +47,7 @@ def migrate_legacy(settings: Settings) -> int:
                      var_name="character", value_name="score")
     long = long.dropna(subset=["score"])
     long["score"] = long["score"].round().astype("int64")
+    long["distance"] = long["character"].map(lambda n: settings.teams.get(n, ""))
     long = long.sort_values(["match_id", "character"], kind="stable")[COLUMNS]
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -50,28 +58,48 @@ def migrate_legacy(settings: Settings) -> int:
     return len(wide)
 
 
+def _write(df: pd.DataFrame, settings: Settings):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    tmp = settings.scores_path.with_suffix(".tmp")
+    df[COLUMNS].to_csv(tmp, index=False)
+    tmp.replace(settings.scores_path)
+
+
 def load_scores(settings: Settings) -> pd.DataFrame:
     """All recorded scores in long format (empty frame if none yet)."""
     migrate_legacy(settings)
     path = settings.scores_path
     if not path.is_file():
         return _empty()
-    df = pd.read_csv(path, dtype={"timestamp": "str", "character": "str"})
+    df = pd.read_csv(path, dtype={"timestamp": "str", "character": "str", "distance": "str"})
     if df.empty:
         return _empty()
+    if "distance" not in df.columns:
+        # Saved before distances were tracked: assume the current teams
+        df["distance"] = df["character"].map(lambda n: settings.teams.get(n, ""))
+        if settings.teams:
+            _write(df, settings)
+    df["distance"] = df["distance"].fillna("")
     df["match_id"] = df["match_id"].astype("int64")
     df["score"] = df["score"].astype("int64")
     return df[COLUMNS]
 
 
-def append_match(scores: dict, settings: Settings, timestamp: str | None = None) -> tuple[int, str]:
-    """Append one match. Returns (match_id, timestamp)."""
+def append_match(scores: dict, settings: Settings, distances: dict | None = None,
+                 timestamp: str | None = None) -> tuple[int, str]:
+    """Append one match. Returns (match_id, timestamp).
+
+    ``distances`` maps characters to the team they raced in; characters not
+    in it fall back to their team in the roster.
+    """
     existing = load_scores(settings)
     match_id = int(existing["match_id"].max()) + 1 if not existing.empty else 1
     timestamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    distances = distances or {}
 
     rows = [
-        {"match_id": match_id, "timestamp": timestamp, "character": name, "score": int(score)}
+        {"match_id": match_id, "timestamp": timestamp, "character": name, "score": int(score),
+         "distance": distances.get(name) or settings.teams.get(name, "")}
         for name, score in scores.items()
         if score is not None
     ]
@@ -84,6 +112,16 @@ def append_match(scores: dict, settings: Settings, timestamp: str | None = None)
         path, mode="a", header=not path.exists(), index=False
     )
     return match_id, timestamp
+
+
+def delete_match(match_id: int, settings: Settings) -> int:
+    """Remove one match. Returns the number of score rows removed."""
+    df = load_scores(settings)
+    keep = df[df["match_id"] != match_id]
+    removed = len(df) - len(keep)
+    if removed:
+        _write(keep, settings)
+    return removed
 
 
 def last_match(scores: pd.DataFrame) -> pd.DataFrame:

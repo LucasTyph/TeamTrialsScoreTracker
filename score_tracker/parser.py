@@ -289,3 +289,23 @@ def parse_scores(ocr_data, character_names, row_tolerance, fuzzy_threshold):
             results[name] = _clean_number(score_entry["text"])
 
     return results
+
+
+def read_name_text(ocr_data, row_tolerance):
+    """The raw name OCR read on the score's line (no roster needed), or None.
+
+    Used to suggest roster names from a screenshot.
+    """
+    text_entries, numbers = _split_entries(ocr_data)
+    score = _find_score_number(numbers, row_tolerance)
+    if score is None:
+        return None
+    y_center = score["y"] + score["h"] / 2
+    words = sorted(
+        (e for e in text_entries
+         if abs(e["y"] + e["h"] / 2 - y_center) <= row_tolerance and e["x"] + e["w"] <= score["x"] + 5),
+        key=lambda e: e["x"],
+    )
+    cleaned = [re.sub(r"[^A-Za-z.'\-]", "", e["text"]) for e in words]
+    cleaned = [w for w in cleaned if len(w) >= 2 or (len(w) == 1 and w.isupper())]
+    return " ".join(cleaned) or None
