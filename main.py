@@ -5,7 +5,7 @@ Equivalent to ``python -m score_tracker``.
 
 import sys
 
-from score_tracker.gui.app import run
+from score_tracker.launch import main
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())

@@ -48,8 +48,9 @@ def default_data_dir() -> Path:
     """Where match data and settings are stored.
 
     - ``SCORE_TRACKER_DATA`` environment variable, if set
-    - ``<project>/data`` when running from a source checkout
-    - ``%LOCALAPPDATA%/TeamTrialsScoreTracker`` when installed with pip
+    - ``<project>/data`` when running from a source checkout, or from an
+      .exe built into the checkout's ``dist`` folder
+    - ``%LOCALAPPDATA%/TeamTrialsScoreTracker`` otherwise
     """
     env = os.environ.get("SCORE_TRACKER_DATA")
     if env:
@@ -57,6 +58,10 @@ def default_data_dir() -> Path:
     root = PACKAGE_DIR.parent
     if (root / "pyproject.toml").is_file():
         return root / "data"
+    if getattr(sys, "frozen", False):
+        for folder in Path(sys.executable).resolve().parents:
+            if (folder / "pyproject.toml").is_file() and (folder / "score_tracker").is_dir():
+                return folder / "data"
     base = os.environ.get("LOCALAPPDATA")
     return (Path(base) if base else Path.home()) / "TeamTrialsScoreTracker"
 

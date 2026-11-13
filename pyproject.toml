@@ -20,10 +20,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Building TeamTrialsScoreTracker.exe (scripts/build_exe.bat)
+build = ["pyinstaller>=6.10"]
 
 # A GUI script: on Windows it starts without a console window
 [project.gui-scripts]
-score-tracker = "score_tracker.gui.app:run"
+score-tracker = "score_tracker.launch:main"
 
 [tool.setuptools]
 packages = ["score_tracker", "score_tracker.gui"]

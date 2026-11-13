@@ -31,10 +31,20 @@ python -m score_tracker
 
 Or double-click `scripts/start.bat`, which opens the app without a console window. Closing the window quits the app; a match that's still missing characters is saved as partial first.
 
+### As a Windows app (.exe)
+
+```bash
+pip install -e ".[build]"
+python scripts/build_exe.py --shortcut
+```
+
+This builds `dist/TeamTrialsScoreTracker/TeamTrialsScoreTracker.exe` (no console window, no Python needed to run it) and adds **Team Trials Score Tracker** shortcuts to the Desktop and Start menu (leave out `--shortcut` to skip them). The .exe uses this checkout's `data/` folder, so keep it where it was built, and rebuild after pulling changes. `scripts/start.bat` also opens the .exe when it exists. A splash screen shows while the app loads, either way. Tesseract is still a separate install.
+
 1. **Roster.** Type your 15 racers into the five teams (names autocomplete), or open a race's Score Info in the game and click **Fill from game screen**: it reads the names and each one's distance badge. Do it once at the top of the list and once at the bottom, check the names, then **Save**.
 2. **Capture a match.** In the game, open the race's **Score Info** and press the capture hotkey (`Ctrl+Alt+S` by default). Drag the list to the bottom and press it again. The match saves itself once all 15 are found, with a notice in the window (and a flashing taskbar button if you're in the game). `Win+Shift+S` snips work too: the app watches the clipboard while **Watch the clipboard** is ticked on the **Current match** page.
 3. **Fix what OCR missed.** If a row couldn't be read, the **Current match** page shows its picture with the most likely missing name preselected. Click **Assign**, or type a missing score straight into its slot.
-4. **Analysis.** Open the **Analysis** page any time. Click a character in the table to see their history.
+4. **Flag bad reads.** If a screenshot missed or misread someone, click **⚑ Flag last capture** on the **Current match** page (with an optional note). The screenshot and everything read from it are kept in the data folder's `flagged/` folder as examples for improving the OCR later; nothing else uses them yet.
+5. **Analysis.** Open the **Analysis** page any time. Click a character in the table to see their history.
 
 The hotkey works from anywhere and captures the game window even when it's behind other windows. It never captures the rest of your screen.
 
@@ -43,7 +53,8 @@ The hotkey works from anywhere and captures the game window even when it's behin
 Every score in the game is base points × (1 + opponent-rating bonus + support bonus), so a single match says as much about who you faced as about your team. The analysis therefore sticks to **averages over everything you've recorded**, which get steadier with every match.
 
 - **Overview.** Matches recorded (complete and partial), average and median match total, best and worst match, and **recent form**: the average of your last 10 complete matches compared with your overall average.
-- **Teams.** One card per distance, ranked strongest to weakest by average team total, with its share of the match total, best, worst and CV (spread relative to the average), and recent form. Members are sorted by average, with each one's share of the team total. The **top** contributor and the **weakest** are marked, with how far the weakest sits below the team's per-member average: that's where a better racer helps most. A bar chart compares the five teams.
+- **Teams.** One card per distance, ranked strongest to weakest by average team total, with its share of the match total, best, worst and CV (spread relative to the average), and recent form. Members are sorted by average, with each one's share of the team total and how far they sit from the team's per-member average. A bar chart compares the five teams.
+- **Replace first** and **Top performers.** The three weakest and the three strongest racers of the lineup (by Value once ratings are in, else by average), each with an archetype (*Low ceiling*, *Boom or bust*, *Inconsistent*, *Reliable star*, …), a strip showing their worst-to-best range against the average racer, and the numbers behind it: their difference from the match average with its 95% range, how often they beat it, ceiling, floor and consistency ranked among the 15, average as a share of their best, and what their rating adds or costs per match.
 - **Match totals.** Every complete match in order, with a 10-match rolling average and your overall average.
 - **Characters.** A sortable table: team, matches, average, median, best, worst, std, CV, average share of team total, average rank in team (1–3) and in the match (1–15), how often they top their team and the match, and recent form. Click one for their score history (with a rolling average) and the 95% range of their average, their gap to the team's per-member average and, for racers who changed teams, their average in each.
 - **Recent matches.** Each match's total, its lineup and its difference from your average. Delete a bad capture here, or **Move…** it to another lineup.
@@ -56,8 +67,7 @@ Every score is base points × (1 + bonus), and the bonus grows with your opponen
 
 - **Value**: a racer's average score plus what their rating adds to the rest of the team, compared with a racer at the lineup's average rating. Sort the character table by it.
 - **Base score**: the rating-neutral average (each score divided by 1 + bonus), to compare across rating changes.
-- **Replace first**: the three lowest-Value slots, with the score a replacement needs to break even.
-- **What if**: a candidate's rating, aptitudes and expected score in one slot → the projected match total.
+- **Replace first** ranks by Value.
 
 Racers without a rating count as the lineup's average, so nothing changes until you enter some.
 
@@ -126,6 +136,9 @@ match_id,timestamp,character,score,distance,lineup
 │   ├── ocr.py                # Row detection, crops, preprocessing, distance badges
 │   ├── parser.py             # Name matching and score parsing
 │   ├── analysis.py           # Average-based match, team and character stats
+│   ├── profiles.py           # Why a racer is weak or strong (Replace first, Top performers)
+│   ├── flagged.py            # Screenshots flagged as misread, kept for OCR work
+│   ├── launch.py             # Entry point: splash screen, then the app
 │   ├── ratings.py            # Rating model: Value, break-even, what-if, fit, lineup comparison
 │   ├── lineups.py            # Builds and lineups (roster.json)
 │   ├── storage.py            # scores.csv
@@ -134,6 +147,7 @@ match_id,timestamp,character,score,distance,lineup
 │   └── assets/icon.png       # App icon
 ├── main.py                   # Shortcut for python -m score_tracker
 ├── scripts/start.bat         # Windows launcher (no console window)
+├── scripts/build_exe.py      # Builds the .exe with PyInstaller
 ├── data/                     # Your settings and scores (gitignored)
 └── tests/                    # pytest suite with real screenshots
 ```

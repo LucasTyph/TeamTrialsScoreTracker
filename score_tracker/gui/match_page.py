@@ -43,6 +43,7 @@ class MatchPage(QWidget):
     ignore_row_requested = Signal(object)
     clipboard_toggled = Signal(bool)
     lineup_selected = Signal(str)  # lineup id
+    flag_requested = Signal()  # keep the last screenshot as a misread example
 
     def __init__(self):
         super().__init__()
@@ -67,6 +68,12 @@ class MatchPage(QWidget):
         titles.addWidget(self.subtitle)
         header.addLayout(titles)
         header.addStretch(1)
+        self.flag_btn = QPushButton("⚑ Flag last capture")
+        self.flag_btn.setObjectName("iconButton")
+        self.flag_btn.setToolTip("The last screenshot missed or misread someone? Keep it, with what was read, "
+                                 "in the data folder's 'flagged' folder for improving the OCR later.")
+        self.flag_btn.clicked.connect(self.flag_requested)
+        header.addWidget(self.flag_btn)
         self.discard_btn = QPushButton("Discard")
         self.discard_btn.setObjectName("danger")
         self.save_btn = QPushButton("Save as partial")
@@ -124,8 +131,19 @@ class MatchPage(QWidget):
 
     # ------------------------------------------------------------------
 
-    def refresh(self, settings, acc, busy=False, last_saved=None, roster=None):
-        """Redraw from the session's pending MatchAccumulator."""
+    def refresh(self, settings, acc, busy=False, last_saved=None, roster=None, last_capture=None):
+        """Redraw from the session's pending MatchAccumulator.
+
+        ``last_capture`` is (time, flagged) for the most recent screenshot, if any.
+        """
+        if last_capture is None:
+            self.flag_btn.setEnabled(False)
+            self.flag_btn.setText("⚑ Flag last capture")
+        else:
+            when, flagged = last_capture
+            self.flag_btn.setEnabled(not flagged and not busy)
+            self.flag_btn.setText(f"⚑ Flagged ({when:%H:%M:%S})" if flagged else
+                                  f"⚑ Flag last capture ({when:%H:%M:%S})")
         self.lineup_box.blockSignals(True)
         self.lineup_box.clear()
         for l in (roster.lineups if roster else []):

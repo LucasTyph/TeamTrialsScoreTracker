@@ -2,6 +2,6 @@
 
 import sys
 
-from .gui.app import run
+from .launch import main
 
-sys.exit(run())
+sys.exit(main())

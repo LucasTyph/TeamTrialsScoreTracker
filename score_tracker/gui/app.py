@@ -11,6 +11,7 @@ import logging
 import sys
 import threading
 from dataclasses import replace
+from datetime import datetime
 from difflib import get_close_matches
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QHBoxLayout,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -31,6 +33,7 @@ from .. import ocr
 from ..analysis import analyze
 from ..capture import CaptureError, capture_game, game_in_front
 from ..config import ASSETS_DIR, Settings, SettingsError, load_settings, save_settings
+from ..flagged import flagged_dir, save_flagged
 from ..lineups import Roster, apply_lineup, load_roster, save_roster
 from ..pipeline import UNNAMED, detect_roster
 from ..session import MatchSession
@@ -207,6 +210,7 @@ class TrackerApp(QObject):
         self.pool.setMaxThreadCount(1)  # one OCR job at a time, in order
         self.busy = 0
         self.last_saved = None
+        self.last_capture = None  # {"img", "result", "at", "flagged"} for the most recent screenshot
         self.watch_clipboard = True
         self._last_clip_hash = None
         self._storage_lock = threading.Lock()
@@ -227,6 +231,7 @@ class TrackerApp(QObject):
         mp.ignore_row_requested.connect(self._ignore_row)
         mp.clipboard_toggled.connect(self._set_watch)
         mp.lineup_selected.connect(self._switch_lineup)
+        mp.flag_requested.connect(self._flag_last_capture)
         rp = self.window.roster_page
         rp.saved.connect(self._apply_settings)
         rp.detect_requested.connect(self._detect_roster)
@@ -318,12 +323,14 @@ class TrackerApp(QObject):
         self.busy += 1
         self.refresh_match()
         job = _Job(self.session.process_image, img)
-        job.signals.done.connect(self._processed)
+        job.signals.done.connect(lambda outcome, img=img: self._processed(outcome, img))
         job.signals.failed.connect(self._failed)
         self.pool.start(job)
 
-    def _processed(self, outcome):
+    def _processed(self, outcome, img=None):
         self.busy -= 1
+        if img is not None:
+            self.last_capture = {"img": img, "result": outcome.result, "at": datetime.now(), "flagged": False}
         if outcome.ignored:
             self.notify("No scores found", "That screenshot doesn't look like a Score Info screen.", "warning")
         else:
@@ -344,6 +351,24 @@ class TrackerApp(QObject):
             active = self.roster.active_lineup
             self.notify("Wrong lineup?", f"{listed} isn't in the active lineup “{active.name}”. "
                         "Switch lineups on the Current match page.", "warning")
+
+    def _flag_last_capture(self):
+        cap = self.last_capture
+        if cap is None or cap["flagged"]:
+            return
+        note, ok = QInputDialog.getText(self.window, "Flag last capture",
+                                        "What went wrong? (optional, e.g. “missed Oguri Cap”)")
+        if not ok:
+            return
+        try:
+            path = save_flagged(cap["img"], cap["result"], self.settings, note.strip(), self.roster.active)
+        except OSError as e:
+            self.notify("Couldn't save the screenshot", str(e), "error")
+            return
+        cap["flagged"] = True
+        count = len(list(flagged_dir(self.settings).glob("*.png")))
+        self.notify("Capture flagged", f"Saved as {path.name} · {count} flagged so far")
+        self.refresh_match()
 
     def _failed(self, message):
         self.busy -= 1
@@ -454,8 +479,10 @@ class TrackerApp(QObject):
 
     def refresh_match(self):
         acc = self.session.pending
+        cap = self.last_capture
         self.window.match_page.refresh(self.settings, acc, busy=self.busy > 0, last_saved=self.last_saved,
-                                       roster=self.roster)
+                                       roster=self.roster,
+                                       last_capture=(cap["at"], cap["flagged"]) if cap else None)
         found, total = len(acc.final_scores()), len(self.settings.roster)
         in_progress = bool(found or acc.unnamed)
         self.window.setWindowTitle(f"{APP_NAME} · {found}/{total}" if in_progress else APP_NAME)
@@ -523,12 +550,21 @@ def _make_app() -> QApplication:
     return app
 
 
-def run() -> int:
-    """Open the app. Returns the exit code."""
+def run(splash=None) -> int:
+    """Open the app. Returns the exit code.
+
+    ``splash`` (from launch.py) is closed once the window shows, or before
+    any message box.
+    """
     app = _make_app()
+
+    def close_splash():
+        if splash is not None:
+            splash.close()
     try:
         settings = load_settings()
     except SettingsError as e:
+        close_splash()
         QMessageBox.critical(None, APP_NAME,
                              f"Your settings file couldn't be read:\n\n{e}\n\n"
                              "Fix the file (or delete it to start over), then open the app again.")
@@ -540,9 +576,11 @@ def run() -> int:
             logger.info("Migrated %d matches to %s", migrated, settings.scores_path)
     except Exception as e:  # noqa: BLE001 - shown to the user
         logger.exception("Migrating old data failed")
+        close_splash()
         QMessageBox.warning(None, APP_NAME, f"Your old match data couldn't be converted:\n\n{e}")
 
     if not ocr.configure(settings.tesseract_cmd):
+        close_splash()
         QMessageBox.warning(
             None, APP_NAME,
             "Tesseract OCR was not found, so screenshots can't be read yet.\n\n"
@@ -555,10 +593,13 @@ def run() -> int:
     try:
         roster = load_roster(settings)
     except (ValueError, KeyError, OSError) as e:
+        close_splash()
         QMessageBox.critical(None, APP_NAME, f"Your lineups file couldn't be read:\n\n{e}\n\n"
                              "Fix or delete roster.json in the data folder, then open the app again.")
         return 1
     tracker = TrackerApp(app, settings, roster)
     tracker.window.show_page(0 if tracker.settings.roster else 2)
     tracker.window.show()
+    if splash is not None:
+        splash.finish(tracker.window)
     return app.exec()
