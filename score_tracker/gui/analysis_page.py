@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCharts import QCategoryAxis, QChart, QChartView, QLineSeries, QScatterSeries, QValueAxis
-from PySide6.QtCore import QMargins, Qt, Signal
+from PySide6.QtCore import QEvent, QMargins, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -239,7 +239,7 @@ class RangeStrip(QWidget):
 CHAR_COLUMNS = [
     ("Character", "Character name"),
     ("Team", "Their current team (or the last one they ran in)"),
-    ("Matches", "Matches they appear in"),
+    ("Match\ncount", "Matches they appear in"),
     ("Average", "Average score over all their matches"),
     ("Value", "Average score plus what their rating adds to everyone's bonus, compared with a racer "
               "at the lineup's average rating. Sort by it to see who to replace first."),
@@ -254,9 +254,7 @@ CHAR_COLUMNS = [
     ("Team\nshare", "Average share of their team's total"),
     ("Team\nrank", "Average rank among their teammates (1 = top of the team)"),
     ("Match\nrank", "Average rank among all 15 in complete matches"),
-    ("Team\ntop", "How often they're their team's top scorer"),
     ("Match\ntop", "How often they're the top scorer of the match"),
-    ("Form", f"Average of their last {RECENT} matches vs. their overall average"),
 ]
 
 
@@ -453,13 +451,17 @@ class AnalysisPage(QWidget):
         self.char_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.char_table.setSortingEnabled(True)
         self.char_table.setObjectName("compactTable")
+        self.char_table.setWordWrap(False)
+        self.char_table.verticalHeader().setDefaultSectionSize(30)
         hh = self.char_table.horizontalHeader()
-        # Numbers share the width left after the names, so the table fits without scrolling
-        hh.setSectionResizeMode(QHeaderView.Stretch)
-        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hh.setMinimumSectionSize(36)
+        # Each column gets the width its text needs, and the rest is shared out
+        # (see _fit_columns), so the table fits without scrolling or cut-off text
+        hh.setSectionResizeMode(QHeaderView.Fixed)
+        hh.setStretchLastSection(True)
+        hh.setMinimumSectionSize(24)
+        hh.sortIndicatorChanged.connect(lambda *_: self._fit_columns())
         self.char_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.char_table.installEventFilter(self)  # refit the columns when the table resizes
         hh.setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(3, Qt.DescendingOrder)  # highest average first
@@ -902,8 +904,8 @@ class AnalysisPage(QWidget):
             cells = [
                 name, team,
                 SortItem(f"{s.n}", s.n),
-                SortItem(_int(s.mean), s.mean),
-                SortItem(_int(val), val),
+                SortItem(_k(s.mean), s.mean),
+                SortItem(_k(val), val),
                 SortItem(_k(rating), rating),
                 SortItem(_k(eff) + ("*" if build is not None and build.below_a else ""), eff),
                 SortItem(_k(base), base),
@@ -915,14 +917,8 @@ class AnalysisPage(QWidget):
                 SortItem(_pct(c.share_of_team), c.share_of_team),
                 SortItem("—" if c.rank_in_team is None else f"{c.rank_in_team:.2f}", c.rank_in_team),
                 SortItem("—" if c.rank_in_match is None else f"{c.rank_in_match:.1f}", c.rank_in_match),
-                SortItem(_pct(c.top_of_team, 0), c.top_of_team),
                 SortItem(_pct(c.top_of_match, 0), c.top_of_match),
-                SortItem(_form_text(c.form, compact=True) if c.form else "—",
-                         c.form.pct if c.form else None),
             ]
-            if c.form:
-                cells[-1].setForeground(QColor(_form_color(c.form)))
-            cells[-1].setToolTip(_form_text(c.form))
             if build is not None and build.below_a:
                 cells[6].setToolTip("Grades below A are stored but treated as A (not modelled)")
             if slot is None and build is not None:
@@ -931,10 +927,9 @@ class AnalysisPage(QWidget):
                 item.setData(Qt.UserRole, c.name)
                 table.setItem(r, col, item)
         table.setSortingEnabled(True)
-        table.resizeRowsToContents()
-        height = table.horizontalHeader().height() + sum(table.rowHeight(i) for i in range(table.rowCount()))
-        table.setFixedHeight(height + 4)
+        self._char_table_height = table.horizontalHeader().sizeHint().height() + 30 * table.rowCount() + 4
         table.blockSignals(False)
+        self._fit_columns()
         names = {c.name for c in a.characters}
         if self._selected in names:
             self._select_row(self._selected)
@@ -942,6 +937,39 @@ class AnalysisPage(QWidget):
         else:
             self._selected = None
             self.detail_card.setVisible(False)
+
+    def _fit_columns(self):
+        """Size the character table's columns to their text, then share out the spare width."""
+        table = self.char_table
+        hh = table.horizontalHeader()
+        head_fm = hh.fontMetrics()
+        pad, arrow = 8, 14
+        visible = [c for c in range(table.columnCount()) if not table.isColumnHidden(c)]
+        need = {}
+        for c in visible:
+            head = table.horizontalHeaderItem(c)
+            width = max((head_fm.horizontalAdvance(line) for line in head.text().split("\n")), default=0) + pad
+            if hh.sortIndicatorSection() == c:
+                width += arrow
+            # Qt's own hint for the cells includes the stylesheet's padding
+            need[c] = max(width, table.sizeHintForColumn(c) + 2)
+        available = table.width() - 2 * table.frameWidth()
+        spare = available - sum(need.values())
+        numbers = [c for c in visible if c > 1] or visible
+        for c in visible:
+            extra = spare // len(numbers) if c in numbers and spare > 0 else 0
+            table.setColumnWidth(c, need[c] + extra)
+        # Too narrow a window: scroll sideways rather than cut text off
+        overflow = spare < 0
+        hh.setStretchLastSection(not overflow)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn if overflow else Qt.ScrollBarAlwaysOff)
+        bar = table.horizontalScrollBar().sizeHint().height() if overflow else 0
+        table.setFixedHeight(getattr(self, "_char_table_height", 0) + bar)
+
+    def eventFilter(self, obj, event):
+        if obj is self.char_table and event.type() == QEvent.Resize:
+            self._fit_columns()
+        return super().eventFilter(obj, event)
 
     def _select_row(self, name):
         for r in range(self.char_table.rowCount()):
