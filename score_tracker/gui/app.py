@@ -10,6 +10,8 @@ import hashlib
 import logging
 import sys
 import threading
+from dataclasses import replace
+from difflib import get_close_matches
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
@@ -29,9 +31,10 @@ from .. import ocr
 from ..analysis import analyze
 from ..capture import CaptureError, capture_game, game_in_front
 from ..config import ASSETS_DIR, Settings, SettingsError, load_settings, save_settings
-from ..pipeline import detect_roster
+from ..lineups import Roster, apply_lineup, load_roster, save_roster
+from ..pipeline import UNNAMED, detect_roster
 from ..session import MatchSession
-from ..storage import append_match, delete_match, load_scores, migrate_legacy
+from ..storage import append_match, delete_match, load_scores, migrate_legacy, move_match
 from . import theme
 from .analysis_page import AnalysisPage
 from .match_page import MatchPage
@@ -68,6 +71,27 @@ def parse_hotkey(text: str):
     else:
         return None
     return mods, vk
+
+
+def wrong_lineup_names(roster: Roster, settings: Settings, result) -> dict:
+    """Unreadable rows whose text matches a racer of another lineup: name -> lineup name."""
+    here = set(settings.roster)
+    elsewhere = {}
+    for l in roster.lineups:
+        if l.id == roster.active:
+            continue
+        for name in roster.teams(l):
+            if name not in here:
+                elsewhere.setdefault(name, l.name)
+    found = {}
+    if not elsewhere:
+        return found
+    for row in result.rows:
+        if row.status == UNNAMED and row.read_text:
+            match = get_close_matches(row.read_text, list(elsewhere), n=1, cutoff=0.75)
+            if match:
+                found[match[0]] = elsewhere[match[0]]
+    return found
 
 
 class _JobSignals(QObject):
@@ -172,10 +196,13 @@ class MainWindow(QMainWindow):
 class TrackerApp(QObject):
     match_saved = Signal(object)  # SavedMatch, emitted from any thread
 
-    def __init__(self, app: QApplication, settings: Settings):
+    def __init__(self, app: QApplication, settings: Settings, roster: Roster | None = None):
         super().__init__()
         self.app = app
+        self.roster = roster if roster is not None else load_roster(settings)
+        settings = apply_lineup(settings, self.roster)
         self.settings = settings
+        self.analysis_filter = ""  # lineup id, "" = all lineups
         self.pool = QThreadPool()
         self.pool.setMaxThreadCount(1)  # one OCR job at a time, in order
         self.busy = 0
@@ -199,10 +226,15 @@ class TrackerApp(QObject):
         mp.resolve_requested.connect(self._resolve)
         mp.ignore_row_requested.connect(self._ignore_row)
         mp.clipboard_toggled.connect(self._set_watch)
+        mp.lineup_selected.connect(self._switch_lineup)
         rp = self.window.roster_page
-        rp.settings_saved.connect(self._apply_settings)
+        rp.saved.connect(self._apply_settings)
         rp.detect_requested.connect(self._detect_roster)
-        self.window.analysis_page.delete_match_requested.connect(self._delete_match)
+        ap = self.window.analysis_page
+        ap.delete_match_requested.connect(self._delete_match)
+        ap.move_match_requested.connect(self._move_match)
+        ap.lineup_filter_changed.connect(self._set_analysis_filter)
+        ap.use_fit_toggled.connect(self._set_use_fit)
 
         QGuiApplication.clipboard().dataChanged.connect(self._clipboard_changed)
         self._remember_clipboard()
@@ -295,6 +327,7 @@ class TrackerApp(QObject):
         if outcome.ignored:
             self.notify("No scores found", "That screenshot doesn't look like a Score Info screen.", "warning")
         else:
+            self._warn_wrong_lineup(outcome.result)
             completed = any(s.complete for s in outcome.saved)
             if not completed:
                 review = len(self.session.pending.needs_review)
@@ -302,6 +335,15 @@ class TrackerApp(QObject):
                 self.notify("Screenshot read",
                             f"{outcome.new_characters} new · {outcome.found}/{outcome.total} found{extra}")
         self.refresh_match()
+
+    def _warn_wrong_lineup(self, result):
+        """Unreadable names that belong to another lineup: probably forgot to switch."""
+        names = wrong_lineup_names(self.roster, self.settings, result)
+        if names:
+            listed = ", ".join(f"{n} (in “{l}”)" for n, l in names.items())
+            active = self.roster.active_lineup
+            self.notify("Wrong lineup?", f"{listed} isn't in the active lineup “{active.name}”. "
+                        "Switch lineups on the Current match page.", "warning")
 
     def _failed(self, message):
         self.busy -= 1
@@ -313,7 +355,7 @@ class TrackerApp(QObject):
     def _store(self, saved):
         """Called by the session (possibly on the worker thread)."""
         with self._storage_lock:
-            append_match(saved.scores, self.settings, saved.distances)
+            append_match(saved.scores, self.settings, saved.distances, lineup=self.roster.active)
         self.match_saved.emit(saved)
 
     def _on_saved(self, saved):
@@ -346,11 +388,33 @@ class TrackerApp(QObject):
     def _delete_match(self, match_id):
         with self._storage_lock:
             delete_match(match_id, self.settings)
+        self.refresh_all()
+
+    def _move_match(self, match_id, lineup_id):
+        with self._storage_lock:
+            move_match(match_id, lineup_id, self.settings)
+        lineup = self.roster.lineup(lineup_id)
+        self.notify("Match moved", f"Now in the lineup “{lineup.name if lineup else lineup_id}”.")
+        self.refresh_all()
+
+    def _set_analysis_filter(self, lineup_id):
+        self.analysis_filter = lineup_id or ""
+        self.refresh_analysis()
+
+    def _set_use_fit(self, on):
+        settings = replace(self.settings, use_fitted_bonus=bool(on))
+        save_settings(settings)
+        self.settings = settings
+        self.session.update_settings(settings)
         self.refresh_analysis()
 
     # --- settings -------------------------------------------------------------
 
-    def _apply_settings(self, settings):
+    def _apply_settings(self, settings, roster=None):
+        if roster is not None:
+            save_roster(roster, settings)
+            self.roster = roster
+        settings = apply_lineup(settings, self.roster)
         save_settings(settings)
         hotkey_changed = settings.capture_hotkey != self.settings.capture_hotkey
         self.settings = settings
@@ -358,6 +422,14 @@ class TrackerApp(QObject):
         if hotkey_changed:
             self._register_hotkey()
         self.refresh_all()
+
+    def _switch_lineup(self, lineup_id):
+        if lineup_id == self.roster.active or self.roster.lineup(lineup_id) is None:
+            return
+        roster = self.roster.copy()
+        roster.active = lineup_id
+        self._apply_settings(self.settings, roster)
+        self.notify("Lineup switched", f"New matches go to “{roster.active_lineup.name}”.")
 
     def _detect_roster(self):
         try:
@@ -382,7 +454,8 @@ class TrackerApp(QObject):
 
     def refresh_match(self):
         acc = self.session.pending
-        self.window.match_page.refresh(self.settings, acc, busy=self.busy > 0, last_saved=self.last_saved)
+        self.window.match_page.refresh(self.settings, acc, busy=self.busy > 0, last_saved=self.last_saved,
+                                       roster=self.roster)
         found, total = len(acc.final_scores()), len(self.settings.roster)
         in_progress = bool(found or acc.unnamed)
         self.window.setWindowTitle(f"{APP_NAME} · {found}/{total}" if in_progress else APP_NAME)
@@ -391,14 +464,27 @@ class TrackerApp(QObject):
         self.window.status.setText(f"Capture hotkey: {hotkey}\nClipboard snips: {clip}")
         self.window.status.setToolTip(f"Data folder: {self.settings.data_dir}")
 
-    def refresh_analysis(self):
-        self.window.analysis_page.refresh(analyze(load_scores(self.settings), self.settings))
+    def match_counts(self, scores) -> dict:
+        if scores.empty:
+            return {}
+        lineups = scores.drop_duplicates("match_id")["lineup"].map(self.roster.resolve_lineup)
+        return lineups.value_counts().to_dict()
+
+    def refresh_analysis(self, scores=None):
+        scores = load_scores(self.settings) if scores is None else scores
+        lineup = self.roster.lineup(self.analysis_filter) if self.analysis_filter else None
+        if lineup is None:
+            self.analysis_filter = ""
+        analysis = analyze(scores, self.settings, self.roster, lineup)
+        self.window.analysis_page.refresh(analysis, self.roster, self.analysis_filter, self.match_counts(scores),
+                                          self.settings)
 
     def refresh_all(self):
+        scores = load_scores(self.settings)
         self.refresh_match()
-        self.refresh_analysis()
-        names = set(load_scores(self.settings)["character"].unique())
-        self.window.roster_page.load(self.settings, names)
+        self.refresh_analysis(scores)
+        names = set(scores["character"].unique())
+        self.window.roster_page.load(self.settings, self.roster, names, self.match_counts(scores))
 
     def shutdown(self):
         """Finish reading screenshots, save an unfinished match as partial, release the hotkey."""
@@ -466,7 +552,13 @@ def run() -> int:
             "or add its folder to your PATH, then restart the app.\n\n"
             "You can still look at your analysis and roster.")
 
-    tracker = TrackerApp(app, settings)
-    tracker.window.show_page(0 if settings.roster else 2)
+    try:
+        roster = load_roster(settings)
+    except (ValueError, KeyError, OSError) as e:
+        QMessageBox.critical(None, APP_NAME, f"Your lineups file couldn't be read:\n\n{e}\n\n"
+                             "Fix or delete roster.json in the data folder, then open the app again.")
+        return 1
+    tracker = TrackerApp(app, settings, roster)
+    tracker.window.show_page(0 if tracker.settings.roster else 2)
     tracker.window.show()
     return app.exec()

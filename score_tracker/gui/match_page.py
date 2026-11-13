@@ -42,6 +42,7 @@ class MatchPage(QWidget):
     resolve_requested = Signal(str, int, object)
     ignore_row_requested = Signal(object)
     clipboard_toggled = Signal(bool)
+    lineup_selected = Signal(str)  # lineup id
 
     def __init__(self):
         super().__init__()
@@ -87,7 +88,17 @@ class MatchPage(QWidget):
         self.layout_.addWidget(self.clipboard_box)
 
         self.grid_card, grid_lay = card()
-        grid_lay.addWidget(label("Your teams", "h2"))
+        grid_head = QHBoxLayout()
+        grid_head.addWidget(label("Your teams", "h2"))
+        grid_head.addStretch(1)
+        grid_head.addWidget(label("Lineup", "muted"))
+        self.lineup_box = QComboBox()
+        self.lineup_box.setMinimumWidth(200)
+        self.lineup_box.setToolTip("Matches you capture are saved to this lineup")
+        self.lineup_box.activated.connect(
+            lambda i: self.lineup_selected.emit(self.lineup_box.itemData(i) or ""))
+        grid_head.addWidget(self.lineup_box)
+        grid_lay.addLayout(grid_head)
         self.grid = QGridLayout()
         self.grid.setHorizontalSpacing(10)
         self.grid.setVerticalSpacing(8)
@@ -113,8 +124,16 @@ class MatchPage(QWidget):
 
     # ------------------------------------------------------------------
 
-    def refresh(self, settings, acc, busy=False, last_saved=None):
+    def refresh(self, settings, acc, busy=False, last_saved=None, roster=None):
         """Redraw from the session's pending MatchAccumulator."""
+        self.lineup_box.blockSignals(True)
+        self.lineup_box.clear()
+        for l in (roster.lineups if roster else []):
+            self.lineup_box.addItem(l.name, l.id)
+        if roster is not None:
+            self.lineup_box.setCurrentIndex(max(self.lineup_box.findData(roster.active), 0))
+        self.lineup_box.setEnabled(self.lineup_box.count() > 1)
+        self.lineup_box.blockSignals(False)
         roster = settings.roster
         final = acc.final_scores()
         inferred = {n for n, _, _ in acc.inferred()}

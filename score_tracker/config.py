@@ -77,6 +77,12 @@ class Settings:
     min_bar_width: int = 100
     # An incomplete match is saved as partial after this many idle minutes
     pending_timeout_minutes: float = 10.0
+    # Rating model: percentage points of score bonus per 1k of team rating,
+    # and the rating boost for each S aptitude instead of A
+    rating_bonus_per_1k: float = 0.5
+    s_aptitude_bonus: float = 0.02
+    # Use the per-1k bonus fitted from your lineups instead of rating_bonus_per_1k
+    use_fitted_bonus: bool = False
     data_dir: Path = field(default_factory=default_data_dir)
 
     @property
@@ -116,6 +122,8 @@ def _legacy_roster(data_dir: Path) -> list[str]:
 
 
 def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, str):
         # Literal string: no escaping needed for Windows paths
         return f"'{value}'" if "'" not in value else json.dumps(value)
@@ -212,7 +220,11 @@ def load_settings(data_dir: Path | None = None) -> Settings:
         expected = type(getattr(defaults, key))
         if expected is float and isinstance(value, int):
             value = float(value)
-        if not isinstance(value, expected) or isinstance(value, bool):
+        if expected is bool:
+            ok = isinstance(value, bool)
+        else:
+            ok = isinstance(value, expected) and not isinstance(value, bool)
+        if not ok:
             raise SettingsError(f"{path}: '{key}' must be of type {expected.__name__}")
         values[key] = value
     return Settings(**values)

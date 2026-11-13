@@ -46,7 +46,22 @@ Every score in the game is base points × (1 + opponent-rating bonus + support b
 - **Teams.** One card per distance, ranked strongest to weakest by average team total, with its share of the match total, best, worst and CV (spread relative to the average), and recent form. Members are sorted by average, with each one's share of the team total. The **top** contributor and the **weakest** are marked, with how far the weakest sits below the team's per-member average: that's where a better racer helps most. A bar chart compares the five teams.
 - **Match totals.** Every complete match in order, with a 10-match rolling average and your overall average.
 - **Characters.** A sortable table: team, matches, average, median, best, worst, std, CV, average share of team total, average rank in team (1–3) and in the match (1–15), how often they top their team and the match, and recent form. Click one for their score history (with a rolling average) and the 95% range of their average, their gap to the team's per-member average and, for racers who changed teams, their average in each.
-- **Recent matches.** Each match's total and its difference from your average. Delete a bad capture here.
+- **Recent matches.** Each match's total, its lineup and its difference from your average. Delete a bad capture here, or **Move…** it to another lineup.
+
+### Ratings and lineups
+
+On the **Roster** page each racer has an optional **rating** (the base rating, before S boosts) and their **surface**, **distance** and **racing style** aptitudes (S or A; Dirt teams race Mile). Each S instead of A adds 2% to the rating. You can also enter the game's **displayed team rating**.
+
+Every score is base points × (1 + bonus), and the bonus grows with your opponents' rating, which matchmaking keeps close to yours (about 0.5 percentage points per 1k of team rating). So a higher-rated racer raises all 15 scores a little, and someone who scores less can still be the better pick. The analysis turns that into:
+
+- **Value**: a racer's average score plus what their rating adds to the rest of the team, compared with a racer at the lineup's average rating. Sort the character table by it.
+- **Base score**: the rating-neutral average (each score divided by 1 + bonus), to compare across rating changes.
+- **Replace first**: the three lowest-Value slots, with the score a replacement needs to break even.
+- **What if**: a candidate's rating, aptitudes and expected score in one slot → the projected match total.
+
+Racers without a rating count as the lineup's average, so nothing changes until you enter some.
+
+**Lineups** are named versions of your 15. Each captured match is saved to the **active** lineup (switch it on the **Current match** page; the app warns if it reads a racer from another lineup). Re-trained a racer? Use **New version** on their slot. Changing who's in a lineup that already has matches offers to **save it as a new lineup**, so history stays truthful. On the Analysis page, filter by lineup, **compare two lineups** (difference per match, team and slot, with a 95% range and roughly how many matches it takes to tell), and, once two lineups with different ratings have a few matches each, see the **bonus per 1k fitted from your data** next to the 0.5% estimate, and choose which one to use.
 
 Rules:
 - Match totals are the sum of the 15 racers' scores. The game's own total also adds team bonuses, so it's a little higher; since that difference is consistent, comparisons aren't affected.
@@ -73,6 +88,11 @@ Your settings live in `settings.toml` in the data folder (not tracked by git). M
 | `tesseract_cmd` | `C:\Program Files\Tesseract-OCR\tesseract.exe` | Path to `tesseract.exe` |
 | `pending_timeout_minutes` | 10 | Save an incomplete match as partial after this long without new screenshots |
 | `row_tolerance`, `fuzzy_match_threshold`, `min_bar_width` | 20, 0.6, 100 | OCR tuning |
+| `rating_bonus_per_1k` | 0.5 | Score bonus (percentage points) per 1k of team rating |
+| `s_aptitude_bonus` | 0.02 | Rating boost per S aptitude instead of A |
+| `use_fitted_bonus` | `false` | Use the bonus fitted from your lineups instead (toggle on the Analysis page) |
+
+Lineups, racers' ratings and aptitudes live in `roster.json` in the data folder. The `[teams]` in `settings.toml` mirror the active lineup and are only read the first time, to create the lineup "Original".
 
 Settings from older versions (`matches_per_week`, `week_reset_weekday`, `week_reset_hour_utc`, `target_score`) are ignored and dropped the next time you save from the app.
 
@@ -89,11 +109,11 @@ Settings from older versions (`matches_per_week`, `week_reset_weekday`, `week_re
 Scores are stored in `scores.csv`, one row per character score:
 
 ```text
-match_id,timestamp,character,score,distance
-1,2026-11-02 22:33:00,Agnes Digital,65582,Dirt
+match_id,timestamp,character,score,distance,lineup
+1,2026-11-02 22:33:00,Agnes Digital,65582,Dirt,l1
 ```
 
-`distance` is the team the character raced in for that match, from the screenshot's badge or your roster. Older files are upgraded automatically.
+`distance` is the team the character raced in for that match, from the screenshot's badge or your roster. `lineup` is the id of the lineup it was played with (empty for matches saved before lineups, which belong to "Original"). Older files are upgraded automatically.
 
 ## Project structure
 
@@ -106,6 +126,8 @@ match_id,timestamp,character,score,distance
 │   ├── ocr.py                # Row detection, crops, preprocessing, distance badges
 │   ├── parser.py             # Name matching and score parsing
 │   ├── analysis.py           # Average-based match, team and character stats
+│   ├── ratings.py            # Rating model: Value, break-even, what-if, fit, lineup comparison
+│   ├── lineups.py            # Builds and lineups (roster.json)
 │   ├── storage.py            # scores.csv
 │   ├── config.py             # Settings and settings.toml
 │   ├── characters.py         # Known names for autocomplete

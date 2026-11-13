@@ -1,7 +1,10 @@
 # Plan: character ratings and team lineups
 
-Status: agreed with the user, not started. Written 2026-11-12 after commit 87c4f7b
-(app-only tracker with average-based analysis). Build it in the three phases at the end.
+Status: implemented (all three phases) on 2026-11-13. Written 2026-11-12 after commit 87c4f7b
+(app-only tracker with average-based analysis).
+
+Decision on `[teams]`: settings.toml keeps a `[teams]` table that mirrors the active lineup (so the
+file stays readable), but `roster.json` is the source of truth once it exists.
 
 ## Goals
 

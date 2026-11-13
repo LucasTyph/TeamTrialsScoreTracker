@@ -14,7 +14,10 @@ Data rules:
 - Teams come from each score's ``distance`` (who actually ran where). Rows
   saved without one fall back to the character's current team in settings.
 
-Everything here is a pure function of the scores and settings.
+- Each match belongs to a lineup (the ``lineup`` column). Passing a roster
+  adds rating stats (see ratings.py); passing a lineup analyses only its matches.
+
+Everything here is a pure function of the scores, settings and roster.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ from datetime import datetime
 import pandas as pd
 
 from .config import DISTANCES, TEAM_SIZE, Settings
+from .lineups import Lineup, Roster, with_slots
+from .ratings import RatingAnalysis, rate
 
 # "Recent form" and rolling averages look at this many matches
 RECENT = 10
@@ -127,6 +132,7 @@ class Match:
     total: int
     characters: int
     complete: bool
+    lineup: str = ""
 
 
 @dataclass
@@ -207,6 +213,8 @@ class Analysis:
     teams: list  # TeamStats, in DISTANCES order (teams with data only)
     characters: list  # CharacterStats, highest average first
     match_size: int  # characters in a complete match
+    ratings: RatingAnalysis | None = None  # with a roster
+    lineup: Lineup | None = None  # the lineup filter, if any
 
     @property
     def complete_matches(self) -> list:
@@ -215,9 +223,11 @@ class Analysis:
 
 # --- computation -------------------------------------------------------------------
 
-def prepare(scores: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """Clean copy with parsed times and every row's distance filled in."""
+def prepare(scores: pd.DataFrame, settings: Settings, roster: Roster | None = None) -> pd.DataFrame:
+    """Clean copy with parsed times, every row's distance filled in and lineups resolved."""
     df = scores.copy()
+    lineup = df["lineup"].fillna("").astype(str) if "lineup" in df else pd.Series("", index=df.index)
+    df["lineup"] = lineup.map(roster.resolve_lineup) if roster is not None else lineup
     df["played_at"] = pd.to_datetime(df["timestamp"], errors="coerce", format="mixed")
     df = df.dropna(subset=["played_at"])
     distance = df["distance"].fillna("").astype(str) if "distance" in df else pd.Series("", index=df.index)
@@ -236,18 +246,30 @@ def match_size(df: pd.DataFrame, settings: Settings) -> int:
     return int(df.groupby("match_id").size().max()) if not df.empty else 0
 
 
-def analyze(scores: pd.DataFrame, settings: Settings) -> Analysis | None:
-    """All the stats the Analysis page shows. None without data."""
+def analyze(scores: pd.DataFrame, settings: Settings, roster: Roster | None = None,
+            lineup: Lineup | None = None) -> Analysis | None:
+    """All the stats the Analysis page shows. None without data.
+
+    With a ``roster``, rating stats are added for ``lineup`` (or the active
+    one). With a ``lineup``, only its matches are analysed.
+    """
     if scores is None or scores.empty:
         return None
-    df = prepare(scores, settings)
+    df = prepare(scores, settings, roster)
     if df.empty:
         return None
+    all_df = df
+    if roster is not None and lineup is not None:
+        settings = with_slots(settings, roster, lineup)
+        df = df[df["lineup"] == lineup.id].reset_index(drop=True)
+        if df.empty:
+            return None
 
     size = match_size(df, settings)
     per_match = (df.groupby("match_id", sort=False)
-                 .agg(total=("score", "sum"), n=("score", "size"), played_at=("played_at", "first")))
-    matches = [Match(int(mid), r.played_at.to_pydatetime(), int(r.total), int(r.n), int(r.n) >= size)
+                 .agg(total=("score", "sum"), n=("score", "size"), played_at=("played_at", "first"),
+                      lineup=("lineup", "first")))
+    matches = [Match(int(mid), r.played_at.to_pydatetime(), int(r.total), int(r.n), int(r.n) >= size, r.lineup)
                for mid, r in per_match.iterrows()]
     complete_ids = {m.match_id for m in matches if m.complete}
     match_total = {m.match_id: m.total for m in matches}
@@ -286,7 +308,12 @@ def analyze(scores: pd.DataFrame, settings: Settings) -> Analysis | None:
     teams = _team_stats(df, team_match, match_total, complete_ids, settings)
     per_member_avg = {t.distance: t.per_member for t in teams}
     characters = _character_stats(df, settings, per_member_avg)
-    return Analysis(matches=matches, overview=overview, teams=teams, characters=characters, match_size=size)
+    ratings = None
+    if roster is not None and roster.lineups:
+        reference = lineup or roster.active_lineup
+        ratings = rate(df, roster, settings, reference, size, all_df)
+    return Analysis(matches=matches, overview=overview, teams=teams, characters=characters, match_size=size,
+                    ratings=ratings, lineup=lineup)
 
 
 def _team_stats(df, team_match, match_total, complete_ids, settings) -> list:

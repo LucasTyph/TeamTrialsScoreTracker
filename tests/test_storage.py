@@ -37,7 +37,7 @@ def test_roster_change_does_not_corrupt_data(settings):
     append_match({"Gamma": 32000, "Delta": 40000, "Omega": 50000}, settings)
 
     df = load_scores(settings)
-    assert set(df.columns) == {"match_id", "timestamp", "character", "score", "distance"}
+    assert set(df.columns) == {"match_id", "timestamp", "character", "score", "distance", "lineup"}
     wide = to_wide(df, ["Gamma", "Delta", "Omega"])
     assert list(wide.columns) == ["timestamp", "Gamma", "Delta", "Omega"]
     assert wide.loc[3].drop("timestamp").tolist() == [32000, 40000, 50000]
@@ -89,6 +89,25 @@ def test_legacy_header_with_newer_rows_appended(settings):
     )
     df = load_scores(s)
     assert df["distance"].tolist() == ["Sprint", "Mile"]
-    assert s.scores_path.read_text().splitlines()[0] == "match_id,timestamp,character,score,distance"
+    assert s.scores_path.read_text().splitlines()[0] == "match_id,timestamp,character,score,distance,lineup"
     append_match({"Alpha": 12000}, s)
     assert len(load_scores(s)) == 3
+
+
+def test_lineup_column_added_to_old_files(settings):
+    settings.scores_path.write_text("match_id,timestamp,character,score,distance\n"
+                                    "1,2026-01-01 10:00,Alpha,10000,Mile\n")
+    df = load_scores(settings)
+    assert df["lineup"].tolist() == [""]
+    assert settings.scores_path.read_text().splitlines()[0].endswith(",lineup")
+    append_match({"Alpha": 11000}, settings, lineup="l2")
+    assert load_scores(settings)["lineup"].tolist() == ["", "l2"]
+
+
+def test_move_match(settings):
+    from score_tracker.storage import move_match
+    append_match({"Alpha": 1, "Beta": 2}, settings, lineup="l1")
+    append_match({"Alpha": 3}, settings, lineup="l1")
+    assert move_match(1, "l2", settings) == 2
+    df = load_scores(settings)
+    assert df.groupby("match_id")["lineup"].first().to_dict() == {1: "l2", 2: "l1"}

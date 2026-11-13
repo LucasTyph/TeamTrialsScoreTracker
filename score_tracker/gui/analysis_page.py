@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from PySide6.QtCharts import QCategoryAxis, QChart, QChartView, QLineSeries, QScatterSeries, QValueAxis
 from PySide6.QtCore import QMargins, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QIntValidator, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QLineEdit,
+    QMenu,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -21,6 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..analysis import RECENT, Analysis, CharacterStats, Form, TeamStats, rolling_mean
+from ..lineups import Build
+from ..ratings import break_even, compare_lineups, effective_rating, what_if
 from . import theme
 from .widgets import SortItem, StatTile, card, clear_layout, distance_badge, label
 
@@ -190,6 +195,11 @@ CHAR_COLUMNS = [
     ("Team", "Their current team (or the last one they ran in)"),
     ("Matches", "Matches they appear in"),
     ("Average", "Average score over all their matches"),
+    ("Value", "Average score plus what their rating adds to everyone's bonus, compared with a racer "
+              "at the lineup's average rating. Sort by it to see who to replace first."),
+    ("Rating", "Base rating (before S boosts) in the lineup being analysed"),
+    ("Eff.\nrating", "Effective rating: +2% per S aptitude"),
+    ("Base\nscore", "Rating-neutral average: each score divided by (1 + rating bonus) of its lineup"),
     ("Median", "Middle score: half their matches are above it"),
     ("Best", "Best score"),
     ("Worst", "Worst score"),
@@ -204,14 +214,26 @@ CHAR_COLUMNS = [
 ]
 
 
+def _grade_box() -> QComboBox:
+    box = QComboBox()
+    box.addItems(("A", "S"))
+    box.setFixedWidth(58)
+    return box
+
+
 class AnalysisPage(QWidget):
     delete_match_requested = Signal(int)
+    move_match_requested = Signal(int, str)  # match id, lineup id
+    lineup_filter_changed = Signal(str)  # lineup id, "" = all
+    use_fit_toggled = Signal(bool)
 
     def __init__(self):
         super().__init__()
         self.setObjectName("page")
         self._analysis: Analysis | None = None
         self._selected: str | None = None
+        self._roster = None
+        self._settings = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.scroll = QScrollArea()
@@ -229,7 +251,16 @@ class AnalysisPage(QWidget):
         titles.addWidget(label("Analysis", "h1"))
         self.subtitle = label("", "muted", wrap=True)
         titles.addWidget(self.subtitle)
-        lay.addLayout(titles)
+        head = QHBoxLayout()
+        head.addLayout(titles, 1)
+        self.filter_label = label("Lineup", "muted")
+        self.filter_box = QComboBox()
+        self.filter_box.setMinimumWidth(220)
+        self.filter_box.activated.connect(
+            lambda i: self.lineup_filter_changed.emit(self.filter_box.itemData(i) or ""))
+        head.addWidget(self.filter_label, 0, Qt.AlignTop)
+        head.addWidget(self.filter_box, 0, Qt.AlignTop)
+        lay.addLayout(head)
 
         self.empty = label("No matches yet. Capture a match and it will show up here.", "muted")
         lay.addWidget(self.empty)
@@ -268,6 +299,123 @@ class AnalysisPage(QWidget):
         self.teams_grid.setVerticalSpacing(12)
         teams_lay.addLayout(self.teams_grid)
         lay.addWidget(self.teams_card)
+
+        # Ratings
+        self.ratings_card, r_lay = card()
+        r_lay.addWidget(label("Ratings", "h2"))
+        self.ratings_note = label("", "muted", wrap=True)
+        r_lay.addWidget(self.ratings_note)
+        self.rating_tiles = QWidget()
+        rt = QGridLayout(self.rating_tiles)
+        rt.setContentsMargins(0, 0, 0, 0)
+        rt.setSpacing(12)
+        self.t_rating = StatTile("Team rating")
+        self.t_bonus = StatTile("Rating bonus")
+        self.t_marginal = StatTile("Value of 1k rating")
+        self.t_fit = StatTile("Bonus fitted from your lineups")
+        for i, t in enumerate((self.t_rating, self.t_bonus, self.t_marginal, self.t_fit)):
+            rt.addWidget(t, 0, i)
+            rt.setColumnStretch(i, 1)
+        r_lay.addWidget(self.rating_tiles)
+        fit_row = QHBoxLayout()
+        self.fit_text = label("", "faint", wrap=True)
+        fit_row.addWidget(self.fit_text, 1)
+        self.fit_btn = QPushButton("Use fitted value")
+        self.fit_btn.clicked.connect(self._toggle_fit)
+        fit_row.addWidget(self.fit_btn)
+        r_lay.addLayout(fit_row)
+        lay.addWidget(self.ratings_card)
+
+        # Replace first + what-if
+        self.replace_card, rp_lay = card()
+        rp_lay.addWidget(label("Replace first", "h2"))
+        rp_lay.addWidget(label(
+            "The three slots with the lowest Value: their average score plus what their rating adds to "
+            "all 15 scores. Replacing one of these gains the most for the least.", "muted", wrap=True))
+        self.replace_list = QVBoxLayout()
+        self.replace_list.setSpacing(10)
+        rp_lay.addLayout(self.replace_list)
+        lay.addWidget(self.replace_card)
+
+        self.whatif_card, w_lay = card()
+        w_lay.addWidget(label("What if", "h2"))
+        w_lay.addWidget(label(
+            "Try a replacement (or a re-trained version) in one slot. Leave the expected score empty to "
+            "assume the same base points at the new rating.", "muted", wrap=True))
+        w_row = QHBoxLayout()
+        w_row.setSpacing(8)
+        self.w_slot = QComboBox()
+        self.w_slot.setMinimumWidth(200)
+        self.w_rating = QLineEdit()
+        self.w_rating.setPlaceholderText("Rating")
+        self.w_rating.setValidator(QIntValidator(0, 999_999))
+        self.w_rating.setFixedWidth(90)
+        self.w_grades = [_grade_box() for _ in range(3)]
+        for box, tip in zip(self.w_grades, ("Surface aptitude", "Distance aptitude", "Style aptitude")):
+            box.setToolTip(tip)
+        self.w_expected = QLineEdit()
+        self.w_expected.setValidator(QIntValidator(0, 9_999_999))
+        self.w_expected.setFixedWidth(130)
+        self.w_expected.setToolTip("Their expected average score in this lineup")
+        w_row.addWidget(label("Slot", "muted"))
+        w_row.addWidget(self.w_slot)
+        w_row.addWidget(label("Rating", "muted"))
+        w_row.addWidget(self.w_rating)
+        w_row.addWidget(label("Aptitudes", "muted"))
+        for box in self.w_grades:
+            w_row.addWidget(box)
+        w_row.addWidget(label("Expected score", "muted"))
+        w_row.addWidget(self.w_expected)
+        w_row.addStretch(1)
+        w_lay.addLayout(w_row)
+        self.w_result = label("", None, wrap=True)
+        self.w_detail = label("", "faint", wrap=True)
+        w_lay.addWidget(self.w_result)
+        w_lay.addWidget(self.w_detail)
+        self.w_slot.currentIndexChanged.connect(self._slot_picked)
+        self.w_rating.textChanged.connect(self._update_what_if)
+        self.w_expected.textChanged.connect(self._update_what_if)
+        for box in self.w_grades:
+            box.currentIndexChanged.connect(self._update_what_if)
+        lay.addWidget(self.whatif_card)
+
+        # Compare lineups
+        self.compare_card, c_lay = card()
+        c_lay.addWidget(label("Compare lineups", "h2"))
+        c_lay.addWidget(label(
+            "Average difference between two lineups, with its 95% range. Rating-adjusted takes the rating "
+            "bonus out, to show what changed apart from the rating.", "muted", wrap=True))
+        c_row = QHBoxLayout()
+        self.c_a = QComboBox()
+        self.c_b = QComboBox()
+        for box in (self.c_a, self.c_b):
+            box.setMinimumWidth(200)
+            box.currentIndexChanged.connect(self._update_compare)
+        c_row.addWidget(self.c_a)
+        c_row.addWidget(label("→", "muted"))
+        c_row.addWidget(self.c_b)
+        c_row.addStretch(1)
+        c_lay.addLayout(c_row)
+        self.c_summary = label("", None, wrap=True)
+        c_lay.addWidget(self.c_summary)
+        self.c_table = QTableWidget(0, 6)
+        self.c_table.setHorizontalHeaderLabels(["", "Before", "After", "Difference", "95% range", ""])
+        self.c_table.verticalHeader().setVisible(False)
+        self.c_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.c_table.setSelectionMode(QTableWidget.NoSelection)
+        self.c_table.setFocusPolicy(Qt.NoFocus)
+        self.c_table.setAlternatingRowColors(True)
+        self.c_table.setShowGrid(False)
+        self.c_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.c_table.setObjectName("compactTable")
+        self.c_table.setWordWrap(False)
+        self.c_table.verticalHeader().setDefaultSectionSize(30)
+        ch = self.c_table.horizontalHeader()
+        ch.setSectionResizeMode(QHeaderView.ResizeToContents)
+        ch.setSectionResizeMode(5, QHeaderView.Stretch)
+        ch.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        c_lay.addWidget(self.c_table)
+        lay.addWidget(self.compare_card)
 
         # Match totals over time
         self.chart_card, chart_lay = card()
@@ -310,6 +458,7 @@ class AnalysisPage(QWidget):
         hh.setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(3, Qt.DescendingOrder)  # highest average first
+        self.char_table.setColumnHidden(4, True)  # shown once ratings exist
         self.char_table.itemSelectionChanged.connect(self._character_selected)
         chars_lay.addWidget(self.char_table)
         lay.addWidget(self.chars_card)
@@ -321,8 +470,8 @@ class AnalysisPage(QWidget):
         # Recent matches
         self.matches_card, m_lay = card()
         m_lay.addWidget(label("Recent matches", "h2"))
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Played", "Total", "vs average", "Characters", ""])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Played", "Lineup", "Total", "vs average", "Characters", ""])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionMode(QTableWidget.NoSelection)
@@ -331,10 +480,10 @@ class AnalysisPage(QWidget):
         self.table.setShowGrid(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in (1, 2, 3):
+        for i in (1, 2, 3, 4):
             hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(4, QHeaderView.Fixed)
-        self.table.setColumnWidth(4, 90)
+        hh.setSectionResizeMode(5, QHeaderView.Fixed)
+        self.table.setColumnWidth(5, 170)
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.setMinimumHeight(260)
         m_lay.addWidget(self.table)
@@ -343,11 +492,17 @@ class AnalysisPage(QWidget):
 
     # ------------------------------------------------------------------
 
-    def refresh(self, analysis: Analysis | None):
+    def refresh(self, analysis: Analysis | None, roster=None, filter_id="", match_counts=None, settings=None):
         self._analysis = analysis
+        self._roster = roster
+        self._settings = settings
+        self._fill_filter(roster, filter_id, match_counts or {})
         has = analysis is not None and bool(analysis.matches)
         self.empty.setVisible(not has)
-        for w in (self.tiles, self.teams_card, self.chart_card, self.chars_card, self.matches_card):
+        self.empty.setText("No matches in this lineup yet." if filter_id else
+                           "No matches yet. Capture a match and it will show up here.")
+        for w in (self.tiles, self.teams_card, self.chart_card, self.chars_card, self.matches_card,
+                  self.ratings_card, self.replace_card, self.whatif_card, self.compare_card):
             w.setVisible(has)
         if not has:
             self.subtitle.setText("")
@@ -355,11 +510,14 @@ class AnalysisPage(QWidget):
             return
         a = analysis
         o = a.overview
+        scope = f"the {o.matches} matches of “{a.lineup.name}”" if a.lineup else f"all {o.matches} recorded matches"
         self.subtitle.setText(
-            f"Averages over all {o.matches} recorded matches. Every score includes opponent and "
+            f"Averages over {scope}. Every score includes opponent and "
             "support bonuses, so single matches are noisy; averages even that out."
             + (" Still few matches: keep capturing for steadier numbers." if o.complete < 10 else "")
         )
+        self._fill_ratings(a)
+        self._fill_compare(a, match_counts or {})
         self._fill_tiles(a)
         self._draw_teams(a)
         complete = a.complete_matches
@@ -369,6 +527,259 @@ class AnalysisPage(QWidget):
                                                    theme.ACCENT, o.totals.mean))
         self._fill_characters(a)
         self._fill_matches(a)
+
+    def _fill_filter(self, roster, filter_id, counts):
+        self.filter_box.blockSignals(True)
+        self.filter_box.clear()
+        self.filter_box.addItem("All lineups", "")
+        for l in (roster.lineups if roster else []):
+            n = counts.get(l.id, 0)
+            self.filter_box.addItem(f"{l.name} ({n})", l.id)
+        self.filter_box.setCurrentIndex(max(self.filter_box.findData(filter_id), 0))
+        self.filter_box.blockSignals(False)
+        many = roster is not None and len(roster.lineups) > 1
+        self.filter_box.setVisible(many)
+        self.filter_label.setVisible(many)
+
+    # --- ratings ----------------------------------------------------------------
+
+    def _fill_ratings(self, a: Analysis):
+        ra = a.ratings
+        clear_layout(self.replace_list)
+        if ra is None:
+            for w in (self.ratings_card, self.replace_card, self.whatif_card):
+                w.setVisible(False)
+            for col in (4, 5, 6, 7):
+                self.char_table.setColumnHidden(col, True)
+            return
+        ref = ra.reference
+        ready = ra.marginal is not None
+        any_rating = self._roster is not None and any(b.rating for b in self._roster.builds.values())
+        for col in (5, 6, 7):
+            self.char_table.setColumnHidden(col, not any_rating)
+        self.char_table.setColumnHidden(4, not ready)
+        self.replace_card.setVisible(ready)
+        self.whatif_card.setVisible(ready)
+        name = f"“{ref.lineup.name}”"
+        if ref.rating is None:
+            self.ratings_note.setText(
+                f"Enter your racers' ratings (or the game's displayed team rating) for {name} on the Roster "
+                "page to see how much rating is worth and who to replace first.")
+        elif ra.match_total is None:
+            self.ratings_note.setText(f"No complete match of {name} yet: capture one to see the value of rating.")
+        else:
+            self.ratings_note.setText(
+                f"For {name}. Every score is base × (1 + bonus) and the bonus grows with your opponents' rating, "
+                "which matchmaking keeps close to yours. So more rating raises all 15 scores a little.")
+        self.rating_tiles.setVisible(ref.rating is not None)
+        if ref.rating is not None:
+            if ref.displayed:
+                detail = "Displayed in the game"
+                if ref.computed:
+                    detail += f" · computed {ref.computed:,.0f}"
+            else:
+                detail = f"Sum of effective ratings · {ref.rated}/{ref.members} rated"
+            self.t_rating.set(f"{ref.rating:,.0f}", detail)
+            source = "fitted from your lineups" if ra.using_fit else "your estimate"
+            self.t_bonus.set(f"+{ra.bonus:.0%}" if ra.bonus is not None else "—",
+                             f"{ra.per_1k:.2f}% per 1k of rating ({source})")
+            if ra.marginal is not None:
+                self.t_marginal.set(f"+{ra.marginal_per_1k:,.0f}",
+                                    f"Match points per 1k of team rating, spread over all 15 "
+                                    f"(average match {ra.match_total:,.0f})")
+            else:
+                self.t_marginal.set("—", "Needs a complete match")
+        fit = ra.fit
+        if fit is None:
+            self.t_fit.set("—", "Needs two lineups with different ratings and 3+ complete matches each")
+            self.fit_text.setText(f"Using {ra.prior:.2f}% per 1k (rating_bonus_per_1k).")
+            self.fit_btn.setVisible(False)
+        else:
+            self.t_fit.set(f"{fit.per_1k:.2f}% ± {1.96 * fit.se:.2f}",
+                           f"per 1k · {fit.matches} matches over {fit.lineups} lineups")
+            using = "the fitted value" if ra.using_fit else f"your estimate ({ra.prior:.2f}% per 1k)"
+            self.fit_text.setText(f"Using {using}. The fit compares match totals between lineups with different "
+                                  "ratings; it's noisy until each lineup has many matches.")
+            self.fit_btn.setVisible(True)
+            self.fit_btn.setText("Use my estimate" if ra.using_fit else "Use fitted value")
+        if ready:
+            self._fill_replace(ra)
+            self._fill_what_if(ra)
+
+    def _toggle_fit(self):
+        ra = self._analysis.ratings if self._analysis else None
+        if ra is not None:
+            self.use_fit_toggled.emit(not ra.using_fit)
+
+    def _fill_replace(self, ra):
+        mean_eff = ra.reference.mean_eff
+        for i, slot in enumerate(ra.replace_first(), start=1):
+            frame = QFrame()
+            frame.setObjectName("teamCard")
+            fl = QVBoxLayout(frame)
+            fl.setContentsMargins(14, 10, 14, 10)
+            fl.setSpacing(4)
+            line = QHBoxLayout()
+            line.addWidget(label(f"{i}. {slot.name}", "h2"))
+            line.addWidget(distance_badge(slot.distance))
+            line.addStretch(1)
+            line.addWidget(label(f"Value {_int(slot.value)}", "muted"))
+            fl.addLayout(line)
+            rating = f"effective rating {slot.eff:,.0f}" if slot.eff else "no rating (counts as average)"
+            fl.addWidget(label(f"Average {_int(slot.average)} over {slot.matches} matches · {rating}", "faint"))
+            eff_old = slot.eff or mean_eff
+            if mean_eff:
+                target = round(mean_eff / 1000) * 1000
+                need = break_even(slot.average, eff_old, target, ra.marginal)
+                fl.addWidget(label(
+                    f"A {target / 1000:.0f}k-rating replacement needs ≈{need / 1000:.1f}k per match to break even. "
+                    f"Each extra 1k of rating lowers that by ≈{ra.marginal_per_1k / 1000:.1f}k.", None, wrap=True))
+            self.replace_list.addWidget(frame)
+
+    def _fill_what_if(self, ra):
+        keep = self.w_slot.currentData()
+        self.w_slot.blockSignals(True)
+        self.w_slot.clear()
+        for slot in ra.slots:
+            if slot.average is not None:
+                self.w_slot.addItem(f"{slot.name} ({slot.distance})", slot.name)
+        i = self.w_slot.findData(keep)
+        self.w_slot.setCurrentIndex(i if i >= 0 else 0)
+        self.w_slot.blockSignals(False)
+        self._slot_picked()
+
+    def _slot_picked(self, *_):
+        ra = self._analysis.ratings if self._analysis else None
+        slot = ra.by_name.get(self.w_slot.currentData()) if ra else None
+        if slot is None:
+            return
+        b = slot.build
+        for w in [self.w_rating, *self.w_grades]:
+            w.blockSignals(True)
+        self.w_rating.setText(str(b.rating) if b.rating else "")
+        for box, g in zip(self.w_grades, b.grades):
+            box.setCurrentText("S" if g == "S" else "A")
+        for w in [self.w_rating, *self.w_grades]:
+            w.blockSignals(False)
+        self._update_what_if()
+
+    def _update_what_if(self, *_):
+        ra = self._analysis.ratings if self._analysis else None
+        slot = ra.by_name.get(self.w_slot.currentData()) if ra else None
+        if slot is None or ra.marginal is None:
+            self.w_result.setText("")
+            self.w_detail.setText("")
+            return
+        s_bonus = self._settings.s_aptitude_bonus if self._settings else 0.02
+        eff_old = slot.eff or ra.reference.mean_eff
+        text = self.w_rating.text().strip()
+        if text:
+            grades = [b.currentText() for b in self.w_grades]
+            cand = Build(id="", character="", rating=int(text), surface_grade=grades[0],
+                         distance_grade=grades[1], style_grade=grades[2])
+            eff_new = effective_rating(cand, s_bonus)
+        else:
+            eff_new = eff_old
+        exp_text = self.w_expected.text().strip()
+        expected = int(exp_text) if exp_text else None
+        total, used = what_if(ra.match_total, ra.reference.rating, ra.per_1k, slot.average,
+                              eff_old, eff_new, expected)
+        if expected is None:
+            self.w_expected.setPlaceholderText(f"{used:,.0f}")
+        change = total - ra.match_total
+        color = theme.SUCCESS if change > 0 else theme.DANGER if change < 0 else theme.MUTED
+        self.w_result.setText(f"Projected match total {total:,.0f} ({_signed(change)} vs {ra.match_total:,.0f})")
+        self.w_result.setStyleSheet(f"color: {color}; font-weight: 600;")
+        need = break_even(slot.average, eff_old, eff_new, ra.marginal)
+        self.w_detail.setText(
+            f"Effective rating {eff_old:,.0f} → {eff_new:,.0f} ({_signed(eff_new - eff_old)}). Expected score "
+            f"{used:,.0f}" + (" (their base score at the new rating)" if expected is None else "")
+            + f" vs their average {slot.average:,.0f}. Break-even at this rating: ≈{need:,.0f}.")
+
+    # --- comparing lineups -----------------------------------------------------------
+
+    def _fill_compare(self, a: Analysis, counts):
+        roster = self._roster
+        with_matches = [l for l in (roster.lineups if roster else []) if counts.get(l.id, 0)]
+        show = a.ratings is not None and len(with_matches) >= 2
+        self.compare_card.setVisible(show)
+        if not show:
+            return
+        keep_a, keep_b = self.c_a.currentData(), self.c_b.currentData()
+        for box in (self.c_a, self.c_b):
+            box.blockSignals(True)
+            box.clear()
+            for l in with_matches:
+                box.addItem(f"{l.name} ({counts[l.id]})", l.id)
+        ids = [l.id for l in with_matches]
+        default_b = roster.active if roster.active in ids else ids[-1]
+        default_a = next((i for i in reversed(ids) if i != default_b), ids[0])
+        self.c_a.setCurrentIndex(self.c_a.findData(keep_a if keep_a in ids else default_a))
+        self.c_b.setCurrentIndex(self.c_b.findData(keep_b if keep_b in ids else default_b))
+        for box in (self.c_a, self.c_b):
+            box.blockSignals(False)
+        self._update_compare()
+
+    def _update_compare(self, *_):
+        a = self._analysis
+        roster = self._roster
+        if a is None or a.ratings is None or roster is None:
+            return
+        la, lb = roster.lineup(self.c_a.currentData()), roster.lineup(self.c_b.currentData())
+        table = self.c_table
+        table.setRowCount(0)
+        if la is None or lb is None or la.id == lb.id:
+            self.c_summary.setText("Pick two different lineups.")
+            table.setVisible(False)
+            return
+        table.setVisible(True)
+        ra = a.ratings
+        s_bonus = self._settings.s_aptitude_bonus if self._settings else 0.02
+        cmp = compare_lineups(ra.frame, roster, la, lb, ra.per_1k, s_bonus, ra.match_size)
+        rows = [("Match total", cmp.raw), ("Match total, rating-adjusted", cmp.adjusted)]
+        rows += [(f"{d} team", dd) for d, dd in cmp.teams.items()]
+        for d, i, ba, bb, dd in cmp.slots:
+            before = f"{ba.character} {ba.label}" if ba else "empty"
+            after = f"{bb.character} {bb.label}" if bb else "empty"
+            same = ba is not None and bb is not None and ba.id == bb.id
+            rows.append((f"{d} {i + 1}: {before}" + ("" if same else f" → {after}"), dd))
+        main = cmp.raw
+        if main is None:
+            self.c_summary.setText("Both lineups need a complete match to compare totals.")
+        else:
+            self.c_summary.setText(f"“{lb.name}” vs “{la.name}”: {_signed(main.delta)} per match "
+                                   f"({_signed_pct(main.pct)}), {self._verdict(main)}.")
+        table.setRowCount(len(rows))
+        for r, (caption, dd) in enumerate(rows):
+            cells = [QTableWidgetItem(caption)]
+            if dd is None:
+                cells += [QTableWidgetItem("—") for _ in range(4)] + [QTableWidgetItem("Not enough matches")]
+            else:
+                cells += [QTableWidgetItem(_int(dd.a)), QTableWidgetItem(_int(dd.b)),
+                          QTableWidgetItem(f"{_signed(dd.delta)} ({_signed_pct(dd.pct)})"),
+                          QTableWidgetItem(f"{_signed(dd.low)} … {_signed(dd.high)}" if dd.se else "—"),
+                          QTableWidgetItem(self._verdict(dd))]
+                if dd.significant:
+                    cells[3].setForeground(QColor(theme.SUCCESS if dd.delta > 0 else theme.DANGER))
+            for c in cells[1:5]:
+                c.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cells[5].setForeground(QColor(theme.FAINT))
+            for col, item in enumerate(cells):
+                table.setItem(r, col, item)
+        height = table.horizontalHeader().sizeHint().height() + 30 * table.rowCount()
+        table.setFixedHeight(height + 4)
+
+    @staticmethod
+    def _verdict(dd) -> str:
+        if dd.significant:
+            return "significant"
+        n = f"n = {dd.n_a} vs {dd.n_b}"
+        need = dd.needed()
+        if need and need > 500:
+            return f"no real difference so far ({n})"
+        if need and need > max(dd.n_a, dd.n_b):
+            return f"not significant yet ({n}; ≈{need} matches each to tell)"
+        return f"not significant ({n})"
 
     def _fill_tiles(self, a: Analysis):
         o = a.overview
@@ -434,6 +845,11 @@ class AnalysisPage(QWidget):
 
         lay.addWidget(label(_int(t.totals.mean), "bigValue"))
         lay.addWidget(label(f"{_pct(t.share_of_match)} of the match total · {t.totals.n} matches", "muted"))
+        ra = self._analysis.ratings if self._analysis else None
+        weak_value = ra.weakest_by_value(t.distance) if ra and ra.marginal is not None else None
+        team_eff = ra.reference.team_eff.get(t.distance) if ra else None
+        if team_eff:
+            lay.addWidget(label(f"Team rating {team_eff:,.0f}", "faint"))
         stats = label(f"Best {_k(t.totals.best)} · Worst {_k(t.totals.worst)} · CV {_pct(t.totals.cv)}", "faint")
         stats.setToolTip(f"Spread (std): {t.totals.std:,.0f}\n"
                          f"The average itself is ± {1.96 * t.totals.se:,.0f} (95%) with this many matches")
@@ -451,12 +867,18 @@ class AnalysisPage(QWidget):
             line.addWidget(name)
             line.addStretch(1)
             is_top, is_weak = m is t.top, m is t.weakest
+            weak_by_value = (weak_value is not None and m.name == weak_value.name and m.current
+                             and (t.weakest is None or t.weakest.name != weak_value.name))
             if is_top:
                 line.addWidget(_tag("Top", theme.SUCCESS))
             elif is_weak:
                 line.addWidget(_tag("Weakest", theme.WARNING))
             elif not m.current:
                 line.addWidget(_tag("Former", theme.FAINT))
+            if weak_by_value:
+                tag = _tag("Weakest by value", theme.WARNING)
+                tag.setToolTip("Lowest Value in the team: their score plus what their rating adds")
+                line.addWidget(tag)
             lay.addLayout(line)
             bar_color = theme.WARNING if is_weak else theme.distance_color(t.distance) if m.current else theme.FAINT
             lay.addWidget(_bar(m.share / best_share, bar_color))
@@ -465,6 +887,9 @@ class AnalysisPage(QWidget):
                 detail += f" · {m.matches} matches"
             if is_weak:
                 detail += f" · {_signed(t.weakest_gap)} vs per-member avg"
+            slot = ra.by_name.get(m.name) if ra and m.current else None
+            if slot is not None and slot.value is not None and ra.marginal is not None:
+                detail += f" · value {_k(slot.value)}"
             d = label(detail, "faint", wrap=True)
             d.setToolTip(f"{m.name}: {m.matches} matches in this team\nAverage {m.mean:,.0f}, "
                          f"{m.share:.1%} of the team total\nTeam per-member average: {t.per_member:,.0f}")
@@ -480,8 +905,17 @@ class AnalysisPage(QWidget):
         table.blockSignals(True)
         table.clearContents()
         table.setRowCount(len(a.characters))
+        ra = a.ratings
+        roster = self._roster
+        s_bonus = self._settings.s_aptitude_bonus if self._settings else 0.02
         for r, c in enumerate(a.characters):
             s = c.scores
+            slot = ra.by_name.get(c.name) if ra else None
+            build = slot.build if slot else (roster.latest_build(c.name) if roster else None)
+            rating = build.rating if build else None
+            eff = slot.eff if slot else effective_rating(build, s_bonus)
+            base = ra.base_by_name.get(c.name) if ra else None
+            val = slot.value if slot and ra.marginal is not None else None
             name = SortItem(c.name, c.name.lower(), Qt.AlignLeft | Qt.AlignVCenter)
             team = SortItem(c.team or "—", c.team or "~", Qt.AlignLeft | Qt.AlignVCenter)
             team.setForeground(QColor(theme.distance_color(c.team)))
@@ -489,6 +923,10 @@ class AnalysisPage(QWidget):
                 name, team,
                 SortItem(f"{s.n}", s.n),
                 SortItem(_int(s.mean), s.mean),
+                SortItem(_int(val), val),
+                SortItem(_k(rating), rating),
+                SortItem(_k(eff) + ("*" if build is not None and build.below_a else ""), eff),
+                SortItem(_k(base), base),
                 SortItem(_k(s.median), s.median),
                 SortItem(_k(s.best), s.best),
                 SortItem(_k(s.worst), s.worst),
@@ -505,6 +943,10 @@ class AnalysisPage(QWidget):
             if c.form:
                 cells[-1].setForeground(QColor(_form_color(c.form)))
             cells[-1].setToolTip(_form_text(c.form))
+            if build is not None and build.below_a:
+                cells[6].setToolTip("Grades below A are stored but treated as A (not modelled)")
+            if slot is None and build is not None:
+                cells[5].setToolTip(f"Not in this lineup: latest version ({build.label})")
             for col, item in enumerate(cells):
                 item.setData(Qt.UserRole, c.name)
                 table.setItem(r, col, item)
@@ -616,6 +1058,7 @@ class AnalysisPage(QWidget):
     # --- matches ------------------------------------------------------------------
 
     def _fill_matches(self, a: Analysis):
+        roster = self._roster
         matches = list(reversed(a.matches))[:50]
         self.table.setRowCount(len(matches))
         o = a.overview
@@ -637,10 +1080,31 @@ class AnalysisPage(QWidget):
             chars = QTableWidgetItem(f"{m.characters}" + ("" if m.complete else " (partial)"))
             if not m.complete:
                 chars.setForeground(QColor(theme.WARNING))
-            for col, item in enumerate((when, total, vs, chars)):
+            lineup = roster.lineup(m.lineup) if roster else None
+            lineup_item = QTableWidgetItem(lineup.name if lineup else "—")
+            lineup_item.setForeground(QColor(theme.MUTED))
+            for col, item in enumerate((when, lineup_item, total, vs, chars)):
                 self.table.setItem(i, col, item)
+            actions = QWidget()
+            al = QHBoxLayout(actions)
+            al.setContentsMargins(0, 0, 0, 0)
+            al.setSpacing(4)
+            if roster is not None and len(roster.lineups) > 1:
+                move = QPushButton("Move…")
+                move.setObjectName("iconButton")
+                move.setToolTip("Attribute this match to another lineup")
+                menu = QMenu(move)
+                for l in roster.lineups:
+                    if l.id == m.lineup:
+                        continue
+                    act = menu.addAction(l.name)
+                    act.triggered.connect(lambda _=False, mid=m.match_id, lid=l.id:
+                                          self.move_match_requested.emit(mid, lid))
+                move.setMenu(menu)
+                al.addWidget(move)
             delete = QPushButton("Delete")
             delete.setObjectName("iconButton")
             delete.clicked.connect(lambda _=False, mid=m.match_id: self.delete_match_requested.emit(mid))
-            self.table.setCellWidget(i, 4, delete)
+            al.addWidget(delete)
+            self.table.setCellWidget(i, 5, actions)
         self.table.resizeRowsToContents()
