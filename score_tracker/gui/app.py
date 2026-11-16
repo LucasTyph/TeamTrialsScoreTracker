@@ -97,9 +97,17 @@ def wrong_lineup_names(roster: Roster, settings: Settings, result) -> dict:
     return found
 
 
+class _JobError(Exception):
+    """A screenshot job's error, with the job it came from."""
+
+    def __init__(self, job_id, error):
+        super().__init__(str(error))
+        self.job_id, self.error = job_id, error
+
+
 class _JobSignals(QObject):
     done = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)  # the exception
 
 
 class _Job(QRunnable):
@@ -113,7 +121,7 @@ class _Job(QRunnable):
             self.signals.done.emit(self.fn(*self.args))
         except Exception as e:  # noqa: BLE001 - reported to the user
             logger.exception("Background job failed")
-            self.signals.failed.emit(str(e))
+            self.signals.failed.emit(e)
 
 
 class MainWindow(QMainWindow):
@@ -208,7 +216,10 @@ class TrackerApp(QObject):
         self.analysis_filter = ""  # lineup id, "" = all lineups
         self.pool = QThreadPool()
         self.pool.setMaxThreadCount(1)  # one OCR job at a time, in order
-        self.busy = 0
+        self.busy = 0  # screenshots queued or being read
+        self._jobs = set()  # ids of those screenshots; cancel_captures() empties it
+        self._next_job = 0
+        self._old_pools = []  # pools abandoned by cancel_captures(), still finishing a job
         self.last_saved = None
         self.last_capture = None  # {"img", "result", "at", "flagged"} for the most recent screenshot
         self.watch_clipboard = True
@@ -232,6 +243,7 @@ class TrackerApp(QObject):
         mp.clipboard_toggled.connect(self._set_watch)
         mp.lineup_selected.connect(self._switch_lineup)
         mp.flag_requested.connect(self._flag_last_capture)
+        mp.cancel_requested.connect(self.cancel_captures)
         rp = self.window.roster_page
         rp.saved.connect(self._apply_settings)
         rp.detect_requested.connect(self._detect_roster)
@@ -320,17 +332,59 @@ class TrackerApp(QObject):
         self.process(img)
 
     def process(self, img):
-        self.busy += 1
+        self._next_job += 1
+        job_id = self._next_job
+        self._jobs.add(job_id)
+        self.busy = len(self._jobs)
         self.refresh_match()
-        job = _Job(self.session.process_image, img)
-        job.signals.done.connect(lambda outcome, img=img: self._processed(outcome, img))
+        # Connect to bound methods only: a lambda's connection dies with the job
+        # object, which Qt deletes as soon as it finishes, so a queued "done"
+        # could be lost and leave the app stuck on "Reading…".
+        job = _Job(self._read, job_id, img)
+        job.signals.done.connect(self._processed)
         job.signals.failed.connect(self._failed)
         self.pool.start(job)
 
-    def _processed(self, outcome, img=None):
-        self.busy -= 1
-        if img is not None:
-            self.last_capture = {"img": img, "result": outcome.result, "at": datetime.now(), "flagged": False}
+    def _read(self, job_id, img):
+        """Runs on the worker thread."""
+        try:
+            return job_id, img, self.session.process_image(img)
+        except Exception as e:  # noqa: BLE001 - reported to the user
+            raise _JobError(job_id, e) from e
+
+    def _finish_job(self, job_id) -> bool:
+        """Forget a job. False if it was cancelled (its result is ignored)."""
+        if job_id not in self._jobs:
+            return False
+        self._jobs.discard(job_id)
+        self.busy = len(self._jobs)
+        return True
+
+    def cancel_captures(self):
+        """Stop reading every queued screenshot. A screenshot already being read
+        can't be interrupted, so it's left to finish in the background and ignored."""
+        if not self._jobs:
+            return
+        count = len(self._jobs)
+        self.session.cancel()
+        self._jobs.clear()
+        self.busy = 0
+        self.pool.clear()  # queued jobs that haven't started
+        if self.pool.activeThreadCount():
+            # Don't let a stuck job hold up new captures: start a fresh queue
+            self._old_pools.append(self.pool)
+            self.pool = QThreadPool()
+            self.pool.setMaxThreadCount(1)
+        logger.info("Cancelled %d capture(s)", count)
+        self.notify("Capture cancelled", f"Stopped reading {count} screenshot(s). Characters already found "
+                    "are kept: use Discard to clear them too.")
+        self.refresh_match()
+
+    def _processed(self, payload):
+        job_id, img, outcome = payload
+        if not self._finish_job(job_id) or outcome.cancelled:
+            return
+        self.last_capture = {"img": img, "result": outcome.result, "at": datetime.now(), "flagged": False}
         if outcome.ignored:
             self.notify("No scores found", "That screenshot doesn't look like a Score Info screen.", "warning")
         else:
@@ -370,9 +424,11 @@ class TrackerApp(QObject):
         self.notify("Capture flagged", f"Saved as {path.name} · {count} flagged so far")
         self.refresh_match()
 
-    def _failed(self, message):
-        self.busy -= 1
-        self.notify("Something went wrong", message, "error")
+    def _failed(self, error):
+        job_id = getattr(error, "job_id", None)
+        if job_id is not None and not self._finish_job(job_id):
+            return
+        self.notify("Something went wrong", str(getattr(error, "error", error)), "error")
         self.refresh_match()
 
     # --- saving -------------------------------------------------------------
@@ -465,8 +521,11 @@ class TrackerApp(QObject):
         self.window.roster_page.status.setText("Reading names…")
         job = _Job(detect_roster, [img], self.settings)
         job.signals.done.connect(self._roster_detected)
-        job.signals.failed.connect(lambda m: self.window.roster_page.status.setText(f"Couldn't read: {m}"))
+        job.signals.failed.connect(self._roster_failed)
         self.pool.start(job)
+
+    def _roster_failed(self, error):
+        self.window.roster_page.status.setText(f"Couldn't read: {error}")
 
     def _roster_detected(self, detected):
         if not detected:
@@ -519,7 +578,7 @@ class TrackerApp(QObject):
             return
         self._shut_down = True
         self.timer.stop()
-        self.pool.waitForDone(10_000)
+        self.pool.waitForDone(10_000)  # cancelled jobs in old pools are abandoned
         if self.session.pending_count:
             self.session.save()
         if sys.platform == "win32" and self._hotkey_registered:
@@ -534,6 +593,12 @@ def _setup_logging(settings: Settings):
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
+
+    # The .exe has no console, so errors would otherwise vanish: log them
+    def log_uncaught(kind, value, tb):
+        logging.getLogger("score_tracker").error("Uncaught error", exc_info=(kind, value, tb))
+
+    sys.excepthook = log_uncaught
 
 
 def _make_app() -> QApplication:

@@ -34,6 +34,7 @@ class ProcessOutcome:
     total: int
     saved: list  # SavedMatch: a finished match and/or a flushed incomplete one
     ignored: bool = False  # nothing that looks like a Score Info screen
+    cancelled: bool = False  # cancel() was called while it was being read: nothing was added
 
 
 class MatchSession:
@@ -50,6 +51,7 @@ class MatchSession:
         self._lock = threading.RLock()
         self._pending = MatchAccumulator(settings)
         self._last_activity = 0.0
+        self._generation = 0  # bumped by cancel(); screenshots read before it are dropped
 
     # --- state -----------------------------------------------------------
 
@@ -88,6 +90,11 @@ class MatchSession:
             acc = self._take()
         return self._emit(acc)
 
+    def cancel(self):
+        """Drop every screenshot still being read. What was already added stays."""
+        with self._lock:
+            self._generation += 1
+
     def discard(self) -> int:
         with self._lock:
             count = len(self._pending)
@@ -113,15 +120,23 @@ class MatchSession:
         with self._lock:
             claimed = dict(self._pending.final_scores())
             settings = self.settings
+            generation = self._generation
         # OCR runs outside the lock so the UI stays responsive.
         result = parse_image(img, settings, claimed=claimed)
         saved = []
+
+        def cancelled():
+            return ProcessOutcome(result, 0, len(self._pending.final_scores()), len(settings.roster), [],
+                                  cancelled=True)
+
         readable = [r for r in result.rows if r.status in (MATCHED, DUPLICATE, UNNAMED)]
         if not readable and not result.fallback_scores:
             return ProcessOutcome(result, 0, self.pending_count, len(settings.roster), saved, ignored=True)
 
         flushed = None
         with self._lock:
+            if generation != self._generation:
+                return cancelled()
             if self._is_new_match(result):
                 flushed = self._take()
         if flushed is not None:
@@ -131,6 +146,8 @@ class MatchSession:
 
         finished = None
         with self._lock:
+            if generation != self._generation:
+                return cancelled()
             before = len(self._pending)
             self._pending.add(result)
             self._last_activity = time.monotonic()

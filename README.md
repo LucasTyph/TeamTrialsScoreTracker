@@ -43,6 +43,7 @@ This builds `dist/TeamTrialsScoreTracker/TeamTrialsScoreTracker.exe` (no console
 1. **Roster.** Type your 15 racers into the five teams (names autocomplete), or open a race's Score Info in the game and click **Fill from game screen**: it reads the names and each one's distance badge. Do it once at the top of the list and once at the bottom, check the names, then **Save**.
 2. **Capture a match.** In the game, open the race's **Score Info** and press the capture hotkey (`Ctrl+Alt+S` by default). Drag the list to the bottom and press it again. The match saves itself once all 15 are found, with a notice in the window (and a flashing taskbar button if you're in the game). `Win+Shift+S` snips work too: the app watches the clipboard while **Watch the clipboard** is ticked on the **Current match** page.
 3. **Fix what OCR missed.** If a row couldn't be read, the **Current match** page shows its picture with the most likely missing name preselected. Click **Assign**, or type a missing score straight into its slot.
+   While screenshots are being read, **Cancel reading** stops them (characters already found are kept; **Discard** clears those too).
 4. **Flag bad reads.** If a screenshot missed or misread someone, click **⚑ Flag last capture** on the **Current match** page (with an optional note). The screenshot and everything read from it are kept in the data folder's `flagged/` folder as examples for improving the OCR later; nothing else uses them yet.
 5. **Analysis.** Open the **Analysis** page any time. Click a character in the table to see their history.
 

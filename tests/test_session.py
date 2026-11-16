@@ -85,3 +85,27 @@ def test_screens_without_scores_are_ignored(monkeypatch):
     s = MatchSession(Settings(roster=ROSTER, data_dir=Path(".")), on_save=lambda x: None)
     assert s.process_image(Image.new("RGB", (4, 4))).ignored
     assert s.pending_count == 0
+
+
+def test_cancel_drops_a_screenshot_being_read(monkeypatch):
+    """cancel() while OCR runs: the screenshot's rows are not added or saved."""
+    saved = []
+    s = MatchSession(Settings(roster=ROSTER, data_dir=Path(".")), on_save=saved.append)
+
+    def parse_then_cancel(img, settings, claimed=()):
+        s.cancel()  # the user cancels while this screenshot is being read
+        rows = [RowResult(name=n, score=1000, status=MATCHED) for n in ROSTER]
+        return ImageResult(rows=rows, bars=len(rows))
+
+    monkeypatch.setattr(session_mod, "parse_image", parse_then_cancel)
+    outcome = s.process_image(Image.new("RGB", (4, 4)))
+    assert outcome.cancelled and outcome.saved == []
+    assert s.pending_count == 0 and saved == []
+
+
+def test_screenshots_after_cancel_are_read(sess):
+    sess.feed({"A": 10000})
+    sess.cancel()
+    out = sess.feed({"B": 20000})
+    assert not out.cancelled
+    assert sess.pending.final_scores() == {"A": 10000, "B": 20000}

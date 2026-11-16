@@ -44,6 +44,7 @@ class MatchPage(QWidget):
     clipboard_toggled = Signal(bool)
     lineup_selected = Signal(str)  # lineup id
     flag_requested = Signal()  # keep the last screenshot as a misread example
+    cancel_requested = Signal()  # stop reading the screenshots in progress
 
     def __init__(self):
         super().__init__()
@@ -79,7 +80,13 @@ class MatchPage(QWidget):
         self.save_btn = QPushButton("Save as partial")
         self.capture_btn = QPushButton("Capture game")
         self.capture_btn.setObjectName("primary")
-        for b in (self.discard_btn, self.save_btn, self.capture_btn):
+        self.cancel_btn = QPushButton("Cancel reading")
+        self.cancel_btn.setObjectName("danger")
+        self.cancel_btn.setToolTip("Stop reading the screenshots in progress. "
+                                   "Characters already found are kept (Discard clears them).")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self.cancel_requested)
+        for b in (self.discard_btn, self.save_btn, self.cancel_btn, self.capture_btn):
             header.addWidget(b)
         self.capture_btn.clicked.connect(self.capture_requested)
         self.save_btn.clicked.connect(self.save_requested)
@@ -160,6 +167,7 @@ class MatchPage(QWidget):
 
         self.capture_btn.setEnabled(not busy)
         self.capture_btn.setText("Reading…" if busy else "Capture game")
+        self.cancel_btn.setVisible(bool(busy))
         self.save_btn.setEnabled(bool(final))
         self.discard_btn.setEnabled(bool(final) or bool(acc.unnamed))
 
