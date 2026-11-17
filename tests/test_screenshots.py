@@ -2,6 +2,8 @@
 
 - print1-4.png: hand-drawn snips (Win+Shift+S) of two matches
 - window1-2.png: full game-window captures (top and bottom) of one match
+- bottom_menu1-3.png: bottom-of-list window captures where the blurred menu
+  behind the panel has a green divider level with the 3rd bar from the bottom
 """
 
 import csv
@@ -77,3 +79,36 @@ def test_distance_badges_on_snips():
 
 def test_dataset_roster_fixture_matches():
     assert len(DATASET_ROSTER) == 15
+
+
+# The seven fully visible rows of each bottom-of-list capture, top to bottom
+BOTTOM_MENU = {
+    "bottom_menu1.png": [("Taiki Shuttle", 63209, "Mile"), ("Gold City", 63138, "Mile"),
+                         ("Eishin Flash", 62033, "Medium"), ("Kitasan Black", 60973, "Long"),
+                         ("Air Groove", 57033, "Sprint"), ("Curren Chan", 54640, "Sprint"),
+                         ("Special Week", 52093, "Long")],
+    "bottom_menu2.png": [("Taiki Shuttle", 66729, "Mile"), ("Gold City", 60184, "Mile"),
+                         ("Maruzensky", 59967, "Mile"), ("Eishin Flash", 58498, "Medium"),
+                         ("Agnes Digital", 55625, "Dirt"), ("Special Week", 51377, "Long"),
+                         ("Air Groove", 67905, "Sprint")],
+    "bottom_menu3.png": [("Smart Falcon", 59788, "Dirt"), ("Mihono Bourbon", 59198, "Sprint"),
+                         ("Agnes Digital", 54205, "Dirt"), ("Special Week", 53670, "Long"),
+                         ("Eishin Flash", 50659, "Medium"), ("Curren Chan", 37458, "Sprint"),
+                         ("Narita Taishin", 60967, "Medium")],
+}
+
+
+@pytest.mark.parametrize("name", sorted(BOTTOM_MENU))
+def test_green_background_ui_does_not_hide_a_bar(name):
+    """Regression: the 3rd row from the bottom was missed on these captures."""
+    expected = BOTTOM_MENU[name]
+    roster = tuple(n for n, _, _ in _window_expected_names()) or tuple(n for n, _, _ in expected)
+    settings = Settings(roster=roster, data_dir=Path("."))
+    result = parse_image(Image.open(TESTS_DIR / name), settings)
+    found = {r.name: (r.score, r.distance) for r in result.rows if r.name}
+    for character, score, distance in expected:
+        assert found.get(character) == (score, distance), character
+
+
+def _window_expected_names():
+    return [(r["character"], r["score"], r["distance"]) for r in _window_expected()]

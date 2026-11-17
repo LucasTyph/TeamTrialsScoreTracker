@@ -105,24 +105,9 @@ def find_score_rows(image, min_bar_width=100):
     arr = np.asarray(image.convert("RGB")).astype(np.int16)
     R, G, B = arr[..., 0], arr[..., 1], arr[..., 2]
     green = (G > 120) & (G > R + 30) & (G > B + 30)
-    runs = _longest_runs(green)
-
-    segments = []  # (y0, y1, x0, x1)
-    y, h = 0, len(runs)
-    while y < h:
-        if runs[y, 0] < min_bar_width:
-            y += 1
-            continue
-        y0 = y
-        y += 1
-        # Rounded bar ends shift the left edge a few px per row
-        while y < h and runs[y, 0] >= min_bar_width and abs(runs[y, 1] - runs[y - 1, 1]) <= 4:
-            y += 1
-        seg = runs[y0:y]
-        segments.append((y0, y, int(seg[:, 1].min()), int(np.median(seg[:, 2]))))
-
     # Grey remainder of a partly-filled bar tells us the full bar width.
     grey = (np.abs(R - G) < 14) & (np.abs(G - B) < 14) & (G > 40) & (G < 130)
+    h = green.shape[0]
 
     def full_end(y0, y1, x1):
         row = grey[(y0 + y1) // 2]
@@ -131,25 +116,53 @@ def find_score_rows(image, min_bar_width=100):
             x += 1
         return x
 
-    clusters = []
-    for seg in segments:
-        for c in clusters:
-            if abs(c[0][2] - seg[2]) <= 6:
-                c.append(seg)
-                break
-        else:
-            clusters.append([seg])
+    def bars(lo=0, hi=None):
+        """Best set of bars, looking only at columns lo..hi."""
+        runs = _longest_runs(green[:, lo:hi])
+        runs[:, 1:] += lo
+        segments = []  # (y0, y1, x0, x1)
+        y = 0
+        while y < h:
+            if runs[y, 0] < min_bar_width:
+                y += 1
+                continue
+            y0 = y
+            y += 1
+            # Rounded bar ends shift the left edge a few px per row
+            while y < h and runs[y, 0] >= min_bar_width and abs(runs[y, 1] - runs[y - 1, 1]) <= 4:
+                y += 1
+            seg = runs[y0:y]
+            segments.append((y0, y, int(seg[:, 1].min()), int(np.median(seg[:, 2]))))
 
-    best = []
-    for c in clusters:
-        x0 = c[0][2]
-        width = max(max(full_end(y0, y1, x1), x1) - x0 for y0, y1, _, x1 in c)
-        rows = [ScoreRow(s[2], s[0], s[1], width) for s in c
-                if 0.02 * width <= s[1] - s[0] <= 0.07 * width]
-        if (len(rows), width) > (len(best), best[0].width if best else 0):
-            best = rows
+        clusters = []
+        for seg in segments:
+            for c in clusters:
+                if abs(c[0][2] - seg[2]) <= 6:
+                    c.append(seg)
+                    break
+            else:
+                clusters.append([seg])
+
+        best = []
+        for c in clusters:
+            x0 = c[0][2]
+            width = max(max(full_end(y0, y1, x1), x1) - x0 for y0, y1, _, x1 in c)
+            rows = [ScoreRow(s[2], s[0], s[1], width) for s in c
+                    if 0.02 * width <= s[1] - s[0] <= 0.07 * width]
+            if (len(rows), width) > (len(best), best[0].width if best else 0):
+                best = rows
+        return best
+
+    best = bars()
     if not best:
         return best
+    # Look again within the bars' columns only: on a full-window capture, longer
+    # green UI behind the panel (e.g. the blurred menu's divider lines) can be
+    # the longest run on a bar's rows and hide that bar.
+    x0, width = best[0].x0, best[0].width
+    again = bars(max(0, x0 - 8), x0 + width + 8)
+    if len(again) >= len(best):
+        best = again
 
     width = best[0].width
     band = int(0.135 * width)
